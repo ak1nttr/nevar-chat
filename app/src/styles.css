@@ -675,6 +675,32 @@ button:disabled {
   color: var(--text-faint);
 }
 
+/* ---------- update ---------- */
+
+.update-banner {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  font-size: 14px;
+  z-index: 15;
+}
+
+.update-banner button {
+  padding: 5px 12px;
+  background: var(--accent);
+  border: none;
+  border-radius: 7px;
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
 /* ---------- toasts ---------- */
 
 .toasts {

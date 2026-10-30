@@ -3,6 +3,7 @@ import { useAppState, useToasts } from "./hooks";
 import { Sidebar } from "./components/Sidebar";
 import { CallStage, Home, IncomingCall } from "./components/Call";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 export default function App() {
   const state = useAppState();
@@ -21,6 +22,7 @@ export default function App() {
       <Sidebar state={state} onSettings={() => setSettingsOpen(true)} toast={push} />
       {inCall ? <CallStage state={state} call={call} toast={push} /> : <Home state={state} />}
 
+      <UpdateBanner inCall={inCall} />
       {call?.phase === "incoming" && <IncomingCall call={call} toast={push} />}
       {settingsOpen && <SettingsPanel state={state} onClose={() => setSettingsOpen(false)} toast={push} />}
 
