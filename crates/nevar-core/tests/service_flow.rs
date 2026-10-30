@@ -49,8 +49,14 @@ impl Peer {
         panic!("timed out waiting for: {what}\nstate: {:#?}", self.service.state());
     }
 
-    fn has_notice(&self, notice: Notice) -> bool {
-        self.notices.lock().unwrap().contains(&notice)
+    async fn wait_notice(&self, notice: Notice) {
+        for _ in 0..100 {
+            if self.notices.lock().unwrap().contains(&notice) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("never got {notice:?}; got {:?}", self.notices.lock().unwrap());
     }
 }
 
@@ -58,6 +64,11 @@ impl Drop for Peer {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Runs `f` on a plain thread outside the async runtime, the way a UI thread calls in.
+fn off_runtime<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::spawn(f).join().expect("service method panicked outside the runtime")
 }
 
 fn rand_suffix() -> u64 {
@@ -76,15 +87,17 @@ async fn friends_and_call_signaling() {
     let (a_id, b_id) = (a.id(), b.id());
 
     // A sends a request; B sees it with A's name.
-    a.service.add_friend(&b_id.to_string()).unwrap();
+    let svc = a.service.clone();
+    off_runtime(move || svc.add_friend(&b_id.to_string())).unwrap();
     b.wait_for("request reaches B", |s| {
         contact(s, &a_id).is_some_and(|c| c.state == ContactState::Incoming && c.name == "Ayse")
     })
     .await;
-    assert!(b.has_notice(Notice::FriendRequest { name: "Ayse".into() }));
+    b.wait_notice(Notice::FriendRequest { name: "Ayse".into() }).await;
 
     // B accepts: both become online friends, with each other's names.
-    b.service.accept_request(&a_id).unwrap();
+    let svc = b.service.clone();
+    off_runtime(move || svc.accept_request(&a_id)).unwrap();
     a.wait_for("A sees B as online friend", |s| {
         contact(s, &b_id).is_some_and(|c| c.state == ContactState::Friend && c.online && c.name == "Burak")
     })
@@ -93,21 +106,22 @@ async fn friends_and_call_signaling() {
         contact(s, &a_id).is_some_and(|c| c.state == ContactState::Friend && c.online)
     })
     .await;
-    assert!(a.has_notice(Notice::FriendAccepted { name: "Burak".into() }));
+    a.wait_notice(Notice::FriendAccepted { name: "Burak".into() }).await;
 
     // A rings B; B declines.
-    a.service.call(&b_id).unwrap();
+    let svc = a.service.clone();
+    off_runtime(move || svc.call(&b_id)).unwrap();
     b.wait_for("B is ringing", |s| s.call.as_ref().is_some_and(|c| c.phase == CallPhase::Incoming)).await;
     b.service.decline_call();
     a.wait_for("A's ring ends", |s| s.call.is_none()).await;
-    assert!(a.has_notice(Notice::CallDeclined { name: "Burak".into() }));
+    a.wait_notice(Notice::CallDeclined { name: "Burak".into() }).await;
 
     // A rings again and cancels before B answers: B sees a missed call.
     a.service.call(&b_id).unwrap();
     b.wait_for("B is ringing again", |s| s.call.is_some()).await;
     a.service.hang_up();
     b.wait_for("B's ring stops", |s| s.call.is_none()).await;
-    assert!(b.has_notice(Notice::MissedCall { name: "Ayse".into() }));
+    b.wait_notice(Notice::MissedCall { name: "Ayse".into() }).await;
 
     // Renaming reaches the friend.
     b.service.set_name("Burak K").unwrap();

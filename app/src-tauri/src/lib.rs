@@ -56,9 +56,13 @@ fn set_name(service: State<Service>, name: String) -> CmdResult {
     service.set_name(&name).map_err(err)
 }
 
+// Commands that may open audio devices run async, i.e. on the runtime's worker threads
+// rather than the window thread, which Windows audio (COM) doesn't like.
+
 #[tauri::command]
-fn set_settings(service: State<Service>, settings: Settings) {
+async fn set_settings(service: State<'_, Service>, settings: Settings) -> CmdResult {
     service.set_settings(settings);
+    Ok(())
 }
 
 #[tauri::command]
@@ -98,7 +102,7 @@ fn start_call(service: State<Service>, id: String) -> CmdResult {
 }
 
 #[tauri::command]
-fn accept_call(service: State<Service>) -> CmdResult {
+async fn accept_call(service: State<'_, Service>) -> CmdResult {
     service.accept_call().map_err(err)
 }
 
@@ -149,6 +153,14 @@ fn init_logging() {
     let file_layer = file.map(|f| fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(f)));
     let stderr_layer = cfg!(debug_assertions).then(fmt::layer);
     tracing_subscriber::registry().with(filter).with(file_layer).with(stderr_layer).init();
+
+    // Without a console a panic would vanish; put it in the log with a backtrace.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("crash: {info}
+{}", std::backtrace::Backtrace::force_capture());
+        default_hook(info);
+    }));
     tracing::info!("nevar {} starting", env!("CARGO_PKG_VERSION"));
 }
 

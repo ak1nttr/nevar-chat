@@ -178,6 +178,9 @@ struct Inner {
     ptt: ptt::PushToTalk,
     online: AtomicBool,
     on_event: EventSink,
+    /// Every background task goes through this, so methods are safe to call from any
+    /// thread, including a UI thread outside the async runtime.
+    rt: tokio::runtime::Handle,
 }
 
 #[derive(Clone)]
@@ -208,12 +211,13 @@ impl Service {
             ptt,
             online: AtomicBool::new(false),
             on_event: Box::new(on_event),
+            rt: tokio::runtime::Handle::current(),
         }));
         service.apply_settings(&service.0.stored.lock().unwrap().settings.clone());
 
-        tokio::spawn(service.clone().accept_loop());
-        tokio::spawn(service.clone().dial_loop());
-        tokio::spawn({
+        service.0.rt.spawn(service.clone().accept_loop());
+        service.0.rt.spawn(service.clone().dial_loop());
+        service.0.rt.spawn({
             let s = service.clone();
             async move {
                 s.0.node.wait_online().await;
@@ -367,7 +371,7 @@ impl Service {
             s.contacts.insert(id, Contact { name, state: ContactState::Outgoing });
         });
         self.send_hello(id);
-        tokio::spawn(self.clone().dial(id));
+        self.0.rt.spawn(self.clone().dial(id));
         Ok(())
     }
 
@@ -377,7 +381,7 @@ impl Service {
         }
         self.set_contact_state(*id, Some(ContactState::Friend));
         self.send_hello(*id);
-        tokio::spawn(self.clone().dial(*id));
+        self.0.rt.spawn(self.clone().dial(*id));
         Ok(())
     }
 
@@ -480,7 +484,7 @@ impl Service {
         self.changed();
 
         let (service, id) = (self.clone(), *id);
-        tokio::spawn(async move {
+        self.0.rt.spawn(async move {
             tokio::time::sleep(RING_TIMEOUT).await;
             let timed_out = matches!(
                 &*service.0.call.lock().unwrap(),
@@ -547,6 +551,8 @@ impl Service {
             .map(|p| p.conn.clone())
             .context("connection lost")?;
         let devices = self.audio_devices();
+        // Call::start spawns its receive task on the runtime.
+        let _rt = self.0.rt.enter();
         let result = Call::start(conn, &devices, self.0.controls.clone());
         let mut slot = self.0.call.lock().unwrap();
         match result {
@@ -647,7 +653,7 @@ impl Service {
     async fn accept_loop(self) {
         while let Some(incoming) = self.0.node.accept().await {
             let service = self.clone();
-            tokio::spawn(async move {
+            self.0.rt.spawn(async move {
                 let conn = match incoming {
                     Ok(conn) => conn,
                     Err(e) => return debug!("incoming connection failed: {e:#}"),
@@ -677,7 +683,7 @@ impl Service {
                     .collect()
             };
             for id in wanted {
-                tokio::spawn(self.clone().dial(id));
+                self.0.rt.spawn(self.clone().dial(id));
             }
         }
     }
@@ -719,8 +725,8 @@ impl Service {
                 }
                 existing.conn.close(CLOSE_DUPLICATE.into(), b"duplicate");
             }
-            let writer = tokio::spawn(write_loop(send, rx));
-            let reader = tokio::spawn(self.clone().read_loop(peer, conn.stable_id(), recv));
+            let writer = self.0.rt.spawn(write_loop(send, rx));
+            let reader = self.0.rt.spawn(self.clone().read_loop(peer, conn.stable_id(), recv));
             peers.insert(peer, Peer { conn: conn.clone(), tx, tasks: [writer, reader] });
         }
         info!(peer = %peer.fmt_short(), "connected");
@@ -797,7 +803,7 @@ impl Service {
     fn drop_peer(&self, id: &EndpointId, code: u32) {
         // Let the last hello go out before closing.
         let Some(peer) = self.0.peers.lock().unwrap().remove(id) else { return };
-        tokio::spawn(async move {
+        self.0.rt.spawn(async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             peer.conn.close(code.into(), b"");
         });
