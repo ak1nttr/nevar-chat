@@ -1,0 +1,3 @@
+[env]
+# Builds the bundled libopus. CMake ships with the Visual Studio Build Tools but isn't on PATH.
+CMAKE = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
