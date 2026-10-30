@@ -1,8 +1,7 @@
 # nevar
 
 Arkadaşlar arasında sesli sohbet. Sunucu yok, hesap yok: bilgisayarlar birbirine doğrudan, uçtan uca şifreli bağlanır.
-
-Voice chat for a small group of friends. No server, no accounts: PCs connect directly to each other, end-to-end encrypted.
+Sadece windowsta çalışır.
 
 ## Kurulum
 
