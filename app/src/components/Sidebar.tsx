@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, AppState, Contact, describeError } from "../api";
+import { api, AppState, CallPhase, Contact, describeError } from "../api";
 import { Avatar } from "./Avatar";
 import { Icon } from "./Icon";
 
@@ -11,72 +11,87 @@ interface Props {
 
 export function Sidebar({ state, onSettings, toast }: Props) {
   const { me, contacts, call } = state;
-  const friends = contacts
-    .filter((c) => c.state === "friend")
-    .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, "tr"));
+  const byName = (a: Contact, b: Contact) => a.name.localeCompare(b.name, "tr");
+  const friends = contacts.filter((c) => c.state === "friend");
+  const online = friends.filter((c) => c.online).sort(byName);
+  const offline = friends.filter((c) => !c.online).sort(byName);
   const incoming = contacts.filter((c) => c.state === "incoming");
   const outgoing = contacts.filter((c) => c.state === "outgoing");
   const run = (p: Promise<unknown>) => p.catch((e) => toast(describeError(e)));
 
   return (
     <aside className="sidebar">
-      <header className="me">
-        <Avatar id={me.id} name={me.name} size={40} />
-        <div className="me-text">
-          <strong>{me.name}</strong>
-          <span className={me.online ? "status on" : "status"}>
-            {me.online ? "Çevrimiçi" : "Bağlanıyor…"}
-          </span>
-        </div>
-        <button className="icon-button" onClick={onSettings} title="Ayarlar">
-          <Icon name="settings" />
-        </button>
+      <header className="brand">
+        <span className="wordmark">nevar</span>
+        <span className={me.online ? "chip live" : "chip"}>
+          <span className="dot" />
+          {me.online ? "Bağlı" : "Bağlanıyor"}
+        </span>
       </header>
 
-      <MyCode id={me.id} />
+      <div className="me">
+        <Avatar id={me.id} name={me.name} size={36} />
+        <div className="me-text">
+          <strong>{me.name}</strong>
+          <MyCode id={me.id} />
+        </div>
+        <button className="icon-button" onClick={onSettings} title="Ayarlar">
+          <Icon name="settings" size={18} />
+        </button>
+      </div>
 
       <div className="lists">
         {incoming.length > 0 && (
-          <section>
-            <h2>İstekler</h2>
+          <Section label="İstekler" count={incoming.length} accent>
             {incoming.map((c) => (
               <div className="row" key={c.id}>
-                <Avatar id={c.id} name={c.name} size={32} />
+                <Avatar id={c.id} name={c.name} size={28} />
                 <span className="row-name">{c.name}</span>
-                <button className="icon-button accept" title="Kabul et" onClick={() => run(api.acceptRequest(c.id))}>
-                  <Icon name="check" />
+                <button className="square-button live" title="Kabul et" onClick={() => run(api.acceptRequest(c.id))}>
+                  <Icon name="check" size={16} />
                 </button>
-                <button className="icon-button" title="Reddet" onClick={() => run(api.declineRequest(c.id))}>
-                  <Icon name="close" />
+                <button className="square-button" title="Reddet" onClick={() => run(api.declineRequest(c.id))}>
+                  <Icon name="close" size={16} />
                 </button>
               </div>
             ))}
-          </section>
+          </Section>
         )}
 
-        <section>
-          <h2>
-            Arkadaşlar <span className="count">{friends.filter((f) => f.online).length}/{friends.length}</span>
-          </h2>
-          {friends.length === 0 && <p className="hint">Henüz arkadaşın yok. Aşağıdan kodla ekleyebilirsin.</p>}
-          {friends.map((c) => (
-            <FriendRow key={c.id} contact={c} busy={call != null} run={run} />
+        <Section label="Çevrimiçi" count={online.length}>
+          {online.length === 0 && <p className="empty-line">Şu an kimse yok</p>}
+          {online.map((c) => (
+            <FriendRow
+              key={c.id}
+              contact={c}
+              callPhase={call?.peer === c.id ? call.phase : undefined}
+              busy={call != null}
+              run={run}
+            />
           ))}
-        </section>
+        </Section>
+
+        {offline.length > 0 && (
+          <Section label="Çevrimdışı" count={offline.length}>
+            {offline.map((c) => (
+              <FriendRow key={c.id} contact={c} busy run={run} />
+            ))}
+          </Section>
+        )}
 
         {outgoing.length > 0 && (
-          <section>
-            <h2>Bekleyen istekler</h2>
+          <Section label="Gönderilen" count={outgoing.length}>
             {outgoing.map((c) => (
-              <div className="row muted" key={c.id}>
-                <Avatar id={c.id} name={c.name} size={32} />
+              <div className="row dim" key={c.id}>
+                <Avatar id={c.id} name={c.name} size={28} />
                 <span className="row-name">{c.name}</span>
-                <button className="icon-button" title="İsteği geri çek" onClick={() => run(api.removeContact(c.id))}>
-                  <Icon name="close" />
+                <span className="tag">Bekliyor</span>
+                <button className="square-button reveal" title="İsteği geri çek" onClick={() => run(api.removeContact(c.id))}>
+                  <Icon name="close" size={16} />
                 </button>
               </div>
             ))}
-          </section>
+          </Section>
         )}
       </div>
 
@@ -85,35 +100,60 @@ export function Sidebar({ state, onSettings, toast }: Props) {
   );
 }
 
-function FriendRow({ contact: c, busy, run }: { contact: Contact; busy: boolean; run: (p: Promise<unknown>) => void }) {
-  const [confirmRemove, setConfirmRemove] = useState(false);
+function Section(props: { label: string; count: number; accent?: boolean; children: React.ReactNode }) {
   return (
-    <div className={c.online ? "row" : "row offline"}>
-      <Avatar id={c.id} name={c.name} size={32} online={c.online} />
+    <section className="section">
+      <h2 className={props.accent ? "label accent" : "label"}>
+        {props.label}
+        <span>{props.count}</span>
+      </h2>
+      {props.children}
+    </section>
+  );
+}
+
+interface FriendRowProps {
+  contact: Contact;
+  /** Set when this friend is the one we're calling or talking to. */
+  callPhase?: CallPhase;
+  busy: boolean;
+  run: (p: Promise<unknown>) => void;
+}
+
+function FriendRow({ contact: c, callPhase, busy, run }: FriendRowProps) {
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  if (confirmRemove) {
+    return (
+      <div className="row confirm">
+        <span className="row-name">{c.name} silinsin mi?</span>
+        <button className="text-button danger" onClick={() => run(api.removeContact(c.id))}>
+          Sil
+        </button>
+        <button className="text-button" onClick={() => setConfirmRemove(false)}>
+          Vazgeç
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={c.online ? "row" : "row dim"}>
+      <Avatar id={c.id} name={c.name} size={28} online={c.online} />
       <span className="row-name">{c.name}</span>
-      {confirmRemove ? (
-        <>
-          <button className="text-button danger" onClick={() => run(api.removeContact(c.id))}>
-            Kaldır
-          </button>
-          <button className="icon-button" title="Vazgeç" onClick={() => setConfirmRemove(false)}>
-            <Icon name="back" />
-          </button>
-        </>
+      <button className="square-button reveal" title="Arkadaşlıktan çıkar" onClick={() => setConfirmRemove(true)}>
+        <Icon name="close" size={14} />
+      </button>
+      {callPhase === "active" ? (
+        <span className="tag live">Görüşmede</span>
+      ) : callPhase ? (
+        <span className="tag warn">{callPhase === "outgoing" ? "Aranıyor" : "Arıyor"}</span>
       ) : (
-        <>
-          <button
-            className="icon-button call"
-            title={c.online ? "Ara" : "Çevrimdışı"}
-            disabled={!c.online || busy}
-            onClick={() => run(api.startCall(c.id))}
-          >
-            <Icon name="phone" />
+        c.online && (
+          <button className="square-button call" title="Ara" disabled={busy} onClick={() => run(api.startCall(c.id))}>
+            <Icon name="phone" size={16} />
           </button>
-          <button className="icon-button reveal" title="Arkadaşlıktan çıkar" onClick={() => setConfirmRemove(true)}>
-            <Icon name="close" size={16} />
-          </button>
-        </>
+        )
       )}
     </div>
   );
@@ -127,10 +167,15 @@ function MyCode({ id }: { id: string }) {
     setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <button className="my-code" onClick={copy} title="Arkadaşına gönder, seni eklesin">
-      <span className="my-code-label">{copied ? "Kopyalandı" : "Arkadaş kodum"}</span>
-      <code>{id.slice(0, 10)}…{id.slice(-6)}</code>
-      <Icon name={copied ? "check" : "copy"} size={16} />
+    <button className="code-button" onClick={copy} title="Arkadaş kodunu kopyala">
+      {copied ? (
+        <span className="live-text">Kopyalandı</span>
+      ) : (
+        <>
+          <code>{id.slice(0, 8)}</code>
+          <Icon name="copy" size={13} />
+        </>
+      )}
     </button>
   );
 }
@@ -145,7 +190,7 @@ function AddFriend({ toast }: { toast: (text: string) => void }) {
     try {
       await api.addFriend(code);
       setCode("");
-      toast("İstek gönderildi. Arkadaşın kabul edince listende görünecek.");
+      toast("İstek gönderildi. Kabul edince listende görünecek.");
     } catch (err) {
       toast(describeError(err));
     } finally {
@@ -154,15 +199,21 @@ function AddFriend({ toast }: { toast: (text: string) => void }) {
   };
   return (
     <form className="add-friend" onSubmit={submit}>
-      <input
-        value={code}
-        onChange={(e) => setCode(e.target.value)}
-        placeholder="Arkadaşının kodunu yapıştır"
-        spellCheck={false}
-      />
-      <button className="icon-button accent" disabled={busy || !code.trim()} title="İstek gönder">
-        <Icon name="plus" />
-      </button>
+      <label className="label" htmlFor="friend-code">
+        Arkadaş ekle
+      </label>
+      <div className="add-friend-row">
+        <input
+          id="friend-code"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="Kodu yapıştır"
+          spellCheck={false}
+        />
+        <button className="square-button live solid" disabled={busy || !code.trim()} title="İstek gönder">
+          <Icon name="plus" size={16} />
+        </button>
+      </div>
     </form>
   );
 }

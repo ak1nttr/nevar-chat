@@ -8,7 +8,8 @@ import { UpdateBanner } from "./components/UpdateBanner";
 export default function App() {
   const state = useAppState();
   const { toasts, push } = useToasts();
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // `?scene=settings` opens settings directly (used by the dev mock).
+  const [settingsOpen, setSettingsOpen] = useState(() => location.search.includes("scene=settings"));
 
   if (!state) {
     return <div className="loading">nevar</div>;
@@ -20,7 +21,7 @@ export default function App() {
   return (
     <div className={inCall ? "app in-call" : "app"}>
       <Sidebar state={state} onSettings={() => setSettingsOpen(true)} toast={push} />
-      {inCall ? <CallStage state={state} call={call} toast={push} /> : <Home state={state} />}
+      {inCall ? <CallStage state={state} call={call} toast={push} /> : <Home state={state} toast={push} />}
 
       <UpdateBanner inCall={inCall} />
       {call?.phase === "incoming" && <IncomingCall call={call} toast={push} />}

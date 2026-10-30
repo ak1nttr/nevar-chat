@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Renders UI scenes from the dev mock to PNGs with headless Edge (no window appears).
+# Usage: scripts/shot.sh <out-dir> [scene...]
+#   scenes: home call incoming ringing settings empty update (default: home call incoming settings)
+#   WIDTH / HEIGHT env vars set the window size (default 1040x700).
+set -uo pipefail
+
+OUT="$1"
+shift
+SCENES=("$@")
+[[ ${#SCENES[@]} -eq 0 ]] && SCENES=(home call incoming settings)
+EDGE="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+
+mkdir -p "$OUT"
+cd "$(dirname "$0")/../app"
+if ! curl -s -o /dev/null http://localhost:1420/; then
+  (pnpm dev > /dev/null 2>&1 &)
+  until curl -s -o /dev/null http://localhost:1420/; do sleep 0.5; done
+fi
+
+win_out="$(cygpath -w "$OUT")"
+profile="$(cygpath -w "${TMPDIR:-/tmp}")\\nevar-shot-profile"
+for scene in "${SCENES[@]}"; do
+  "$EDGE" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+    --window-size="${WIDTH:-1040},${HEIGHT:-700}" --virtual-time-budget=2500 \
+    --user-data-dir="$profile" \
+    --screenshot="${win_out}\\${scene}.png" "http://localhost:1420/?scene=${scene}" > /dev/null 2>&1 ||
+    echo "failed: $scene" >&2
+done
+ls "$OUT"

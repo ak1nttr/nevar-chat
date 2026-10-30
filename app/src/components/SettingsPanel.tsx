@@ -42,66 +42,66 @@ export function SettingsPanel({ state, onClose, toast }: Props) {
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="panel" role="dialog" aria-label="Ayarlar">
-        <header>
+        <header className="panel-head">
           <h2>Ayarlar</h2>
-          <button className="icon-button" onClick={onClose} title="Kapat">
-            <Icon name="close" />
+          <button className="icon-button" onClick={onClose} title="Kapat (Esc)">
+            <Icon name="close" size={18} />
           </button>
         </header>
 
-        <section>
-          <h3>Profil</h3>
-          <label className="field">
-            <span>Adın</span>
+        <Group label="Profil">
+          <Field label="Görünen adın" hint="Arkadaşların seni bu adla görür.">
             <input
+              className="input"
               value={name}
               maxLength={32}
               onChange={(e) => setName(e.target.value)}
               onBlur={saveName}
               onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
             />
-          </label>
-        </section>
+          </Field>
+        </Group>
 
-        <section>
-          <h3>Ses cihazları</h3>
-          <DeviceSelect
-            label="Mikrofon"
-            options={devices?.inputs ?? []}
-            fallback={devices?.defaultInput}
-            value={settings.mic}
-            onChange={(mic) => update({ mic })}
-          />
-          <DeviceSelect
-            label="Hoparlör / kulaklık"
-            options={devices?.outputs ?? []}
-            fallback={devices?.defaultOutput}
-            value={settings.speakers}
-            onChange={(speakers) => update({ speakers })}
-          />
-          <p className="hint">
-            Bluetooth kulaklığın mikrofonunu kullanırsan Windows kulaklığı düşük kaliteli “telefon” moduna alır. Mümkünse
-            ayrı bir mikrofon seç.
+        <Group label="Ses cihazları">
+          <Field label="Mikrofon">
+            <DeviceSelect
+              options={devices?.inputs ?? []}
+              fallback={devices?.defaultInput}
+              value={settings.mic}
+              onChange={(mic) => update({ mic })}
+            />
+          </Field>
+          <Field label="Hoparlör / kulaklık">
+            <DeviceSelect
+              options={devices?.outputs ?? []}
+              fallback={devices?.defaultOutput}
+              value={settings.speakers}
+              onChange={(speakers) => update({ speakers })}
+            />
+          </Field>
+          <p className="note">
+            Bluetooth kulaklığın mikrofonu, kulaklığı düşük kaliteli “telefon” moduna alır. Mümkünse ayrı bir mikrofon
+            seç.
           </p>
-          <label className="field">
-            <span>Gelen ses seviyesi · %{Math.round(settings.output_volume * 100)}</span>
+          <Field label="Gelen ses" value={`%${Math.round(settings.output_volume * 100)}`}>
             <input
+              className="slider"
               type="range"
               min={0}
               max={2}
               step={0.05}
               value={settings.output_volume}
+              style={{ "--fill": `${(settings.output_volume / 2) * 100}%` } as React.CSSProperties}
               onChange={(e) => update({ output_volume: Number(e.target.value) })}
             />
-          </label>
-        </section>
+          </Field>
+        </Group>
 
-        <section>
-          <h3>Ne zaman konuşuyorsun?</h3>
+        <Group label="Mikrofon ne zaman açık?">
           <div className="segmented">
             {(
               [
-                ["voiceActivity", "Sesimi algıla"],
+                ["voiceActivity", "Konuşunca"],
                 ["pushToTalk", "Bas-konuş"],
                 ["open", "Hep açık"],
               ] as [Mode, string][]
@@ -111,46 +111,68 @@ export function SettingsPanel({ state, onClose, toast }: Props) {
               </button>
             ))}
           </div>
+          {settings.mode === "voiceActivity" && (
+            <p className="note">Sesini algılayınca açılır, susunca kapanır. Klavye ve fan sesi geçmez.</p>
+          )}
           {settings.mode === "pushToTalk" && (
             <KeyPicker value={settings.push_to_talk_key} onChange={(key) => update({ push_to_talk_key: key })} />
           )}
-          {settings.mode === "voiceActivity" && (
-            <p className="hint">Konuştuğunu anlayınca mikrofonun açılır, susunca kapanır. Klavye ve fan sesi geçmez.</p>
-          )}
-        </section>
+          {settings.mode === "open" && <p className="note">Mikrofonun görüşme boyunca hep açık kalır.</p>}
+        </Group>
 
-        <section>
-          <h3>Ses temizleme</h3>
-          <Toggle
+        <Group label="Ses temizleme">
+          <Switch
             label="Gürültü engelleme"
-            detail="Klavye, fan, oda sesini siler."
+            hint="Klavye, fan ve oda sesini siler."
             checked={settings.noise_suppression}
             onChange={(noise_suppression) => update({ noise_suppression })}
           />
-          <Toggle
+          <Switch
             label="Yankı engelleme"
-            detail="Hoparlörden dinlerken karşı tarafın kendi sesini duymasını önler."
+            hint="Hoparlörden dinlerken karşı taraf kendi sesini duymaz."
             checked={settings.echo_cancellation}
             onChange={(echo_cancellation) => update({ echo_cancellation })}
           />
-          <Toggle
+          <Switch
             label="Otomatik ses seviyesi"
-            detail="Sesin çok kısık ya da çok yüksekse dengeler."
+            hint="Çok kısık ya da çok yüksek sesi dengeler."
             checked={settings.auto_gain}
             onChange={(auto_gain) => update({ auto_gain })}
           />
-        </section>
+        </Group>
 
-        <footer className="panel-footer">
-          nevar {version} · Sorun olursa %APPDATA%\chat.nevar.app\nevar.log dosyasını gönder.
+        <footer className="panel-foot">
+          <span>nevar {version}</span>
+          <span>Sorun olursa: %APPDATA%\chat.nevar.app\nevar.log</span>
         </footer>
       </div>
     </div>
   );
 }
 
+function Group({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section className="group">
+      <h3 className="label">{label}</h3>
+      {children}
+    </section>
+  );
+}
+
+function Field(props: { label: string; hint?: string; value?: string; children: React.ReactNode }) {
+  return (
+    <label className="field">
+      <span className="field-head">
+        <span>{props.label}</span>
+        {props.value && <span className="field-value">{props.value}</span>}
+      </span>
+      {props.children}
+      {props.hint && <span className="field-hint">{props.hint}</span>}
+    </label>
+  );
+}
+
 function DeviceSelect(props: {
-  label: string;
   options: string[];
   fallback: string | null | undefined;
   value: string | null;
@@ -158,10 +180,9 @@ function DeviceSelect(props: {
 }) {
   const missing = props.value != null && props.options.length > 0 && !props.options.includes(props.value);
   return (
-    <label className="field">
-      <span>{props.label}</span>
+    <span className="select">
       <select value={props.value ?? ""} onChange={(e) => props.onChange(e.target.value || null)}>
-        <option value="">Windows varsayılanı{props.fallback ? ` (${props.fallback})` : ""}</option>
+        <option value="">Windows varsayılanı{props.fallback ? ` · ${props.fallback}` : ""}</option>
         {props.options.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -169,18 +190,27 @@ function DeviceSelect(props: {
         ))}
         {missing && <option value={props.value!}>{props.value} (takılı değil)</option>}
       </select>
-    </label>
+      <svg viewBox="0 0 12 12" aria-hidden="true">
+        <path d="M3 4.5l3 3 3-3" />
+      </svg>
+    </span>
   );
 }
 
-function Toggle(props: { label: string; detail: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Switch(props: { label: string; hint: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label className="toggle">
+    <label className="switch-row">
       <span>
         <strong>{props.label}</strong>
-        <small>{props.detail}</small>
+        <small>{props.hint}</small>
       </span>
-      <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} />
+      <input
+        type="checkbox"
+        role="switch"
+        className="switch"
+        checked={props.checked}
+        onChange={(e) => props.onChange(e.target.checked)}
+      />
     </label>
   );
 }
@@ -218,9 +248,12 @@ function KeyPicker({ value, onChange }: { value: number | null; onChange: (vk: n
 
   return (
     <div className="key-picker">
-      <span>Bas-konuş tuşu</span>
-      <button className={listening ? "key listening" : "key"} onClick={() => setListening(true)}>
-        {listening ? "Bir tuşa ya da fare yan tuşuna bas…" : vkLabel(value)}
+      <span>
+        <strong>Bas-konuş tuşu</strong>
+        <small>Oyundayken de çalışır, tuşu başka yerde kullanmana engel olmaz.</small>
+      </span>
+      <button className={listening ? "keycap listening" : "keycap"} onClick={() => setListening(true)}>
+        {listening ? "Bir tuşa bas…" : vkLabel(value)}
       </button>
     </div>
   );

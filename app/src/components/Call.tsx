@@ -1,10 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
-import { api, AppState, CallInfo, CallStats, describeError } from "../api";
+import { api, AppState, CallInfo, CallStats, Contact, describeError } from "../api";
 import { useCallStats, useElapsed } from "../hooks";
 import { startRinging } from "../ringtone";
-import { Avatar, displayLevel } from "./Avatar";
-import { Icon } from "./Icon";
+import { Avatar } from "./Avatar";
+import { Icon, IconName } from "./Icon";
+import { displayLevel, Meter } from "./Meter";
 
 interface Props {
   state: AppState;
@@ -23,65 +24,135 @@ export function CallStage({ state, call, toast }: Props) {
     if (call.phase === "outgoing") return startRinging("outgoing");
   }, [call.phase]);
 
-  const myLevel = stats && stats.transmitting && !state.muted ? displayLevel(stats.micLevel) : 0;
-  const theirLevel = stats && !state.deafened ? displayLevel(stats.speakerLevel) : 0;
+  const theirLevel = stats?.speakerLevel ?? 0;
+  const myLevel = stats?.micLevel ?? 0;
+  const iTransmit = stats?.transmitting ?? false;
+
+  const theirStatus = !active
+    ? "Çalıyor…"
+    : state.deafened
+      ? "Duymuyorsun"
+      : displayLevel(theirLevel) > 0.15
+        ? "Konuşuyor"
+        : "Sessiz";
+  const myStatus = state.muted ? "Mikrofon kapalı" : iTransmit ? "Konuşuyor" : "Sessiz";
 
   return (
     <main className="stage">
-      <div className="stage-people">
-        <Person id={call.peer} name={call.name} level={theirLevel} />
-        <Person id={state.me.id} name={state.me.name} level={myLevel} you />
+      <header className="stage-bar">
+        <span className={active ? "chip live" : "chip ringing"}>
+          <span className="dot" />
+          {active ? "Canlı" : "Aranıyor"}
+        </span>
+        <span className="stage-title">{call.name}</span>
+        <span className="stage-meta">
+          {stats && <Quality stats={stats} />}
+          {active && <span className="timer">{formatDuration(elapsed)}</span>}
+        </span>
+      </header>
+
+      <div className="strips">
+        <Strip
+          id={call.peer}
+          name={call.name}
+          status={theirStatus}
+          level={theirLevel}
+          talking={active && theirStatus === "Konuşuyor"}
+          off={state.deafened}
+          ringing={!active}
+        />
+        <Strip
+          id={state.me.id}
+          name={state.me.name}
+          you
+          status={myStatus}
+          level={iTransmit ? myLevel : 0}
+          talking={active && myStatus === "Konuşuyor"}
+          off={state.muted}
+        />
       </div>
 
-      <p className="stage-status">
-        {call.phase === "outgoing" ? <span className="pulse">Aranıyor…</span> : formatDuration(elapsed)}
-      </p>
-      {stats && <Quality stats={stats} />}
-
-      <div className="controls">
-        <button
-          className={state.muted ? "control off" : "control"}
+      <div className="dock">
+        <DockButton
+          icon={state.muted ? "micOff" : "mic"}
+          label={state.muted ? "Kapalı" : "Mikrofon"}
+          off={state.muted}
           onClick={() => run(api.setMuted(!state.muted))}
-          title={state.muted ? "Mikrofonu aç" : "Mikrofonu kapat"}
-        >
-          <Icon name={state.muted ? "micOff" : "mic"} size={22} />
-        </button>
-        <button
-          className={state.deafened ? "control off" : "control"}
+        />
+        <DockButton
+          icon={state.deafened ? "headphonesOff" : "headphones"}
+          label={state.deafened ? "Kapalı" : "Ses"}
+          off={state.deafened}
           onClick={() => run(api.setDeafened(!state.deafened))}
-          title={state.deafened ? "Sesi aç" : "Hiçbir şey duyma"}
-        >
-          <Icon name={state.deafened ? "headphonesOff" : "headphones"} size={22} />
-        </button>
-        <button className="control hang-up" onClick={() => run(api.hangUp())} title={active ? "Aramayı bitir" : "İptal"}>
-          <Icon name="hangUp" size={24} />
-        </button>
+        />
+        <DockButton icon="hangUp" label={active ? "Bitir" : "İptal"} danger onClick={() => run(api.hangUp())} />
       </div>
+
       {active && state.settings.mode === "pushToTalk" && state.settings.push_to_talk_key == null && (
-        <p className="hint center">Bas-konuş açık ama tuş seçilmemiş. Ayarlar'dan bir tuş seç.</p>
+        <p className="stage-hint">Bas-konuş açık ama tuş seçilmemiş. Ayarlar'dan bir tuş seç.</p>
       )}
     </main>
   );
 }
 
-function Person({ id, name, level, you }: { id: string; name: string; level: number; you?: boolean }) {
+interface StripProps {
+  id: string;
+  name: string;
+  status: string;
+  level: number;
+  talking: boolean;
+  off?: boolean;
+  you?: boolean;
+  ringing?: boolean;
+}
+
+function Strip({ id, name, status, level, talking, off, you, ringing }: StripProps) {
   return (
-    <figure className="person">
-      <Avatar id={id} name={name} size={112} level={level} />
-      <figcaption>{you ? `${name} (sen)` : name}</figcaption>
+    <figure className={talking ? "strip talking" : "strip"}>
+      <Avatar id={id} name={name} size={84} />
+      <figcaption>
+        <strong>{name}</strong>
+        {you && <span className="you">sen</span>}
+      </figcaption>
+      <span className={off ? "strip-status off" : talking ? "strip-status live-text" : "strip-status"}>{status}</span>
+      <Meter level={level} segments={18} off={off} className={ringing ? "sweep" : undefined} />
     </figure>
   );
 }
 
-function Quality({ stats }: { stats: CallStats }) {
-  const route = stats.route === "direct" ? "Doğrudan bağlantı" : stats.route === "relayed" ? "Aracı sunucu üzerinden" : "Bağlanıyor";
-  const ping = stats.pingMs ?? 0;
-  const grade = ping < 60 ? "good" : ping < 150 ? "ok" : "bad";
+function DockButton(props: { icon: IconName; label: string; off?: boolean; danger?: boolean; onClick: () => void }) {
+  const cls = ["dock-button", props.off && "off", props.danger && "danger"].filter(Boolean).join(" ");
   return (
-    <p className={`quality ${grade}`} title={`Ses tamponu ${stats.bufferMs} ms · kayıp paket ${stats.lost} (kurtarılan ${stats.recovered})`}>
-      <span className="dot" />
-      {route} · {stats.pingMs ?? "?"} ms
-    </p>
+    <button className={cls} onClick={props.onClick}>
+      <Icon name={props.icon} size={20} />
+      <span>{props.label}</span>
+    </button>
+  );
+}
+
+function Quality({ stats }: { stats: CallStats }) {
+  const ping = stats.pingMs ?? 0;
+  const grade = stats.route === "unknown" ? "bad" : ping < 60 ? "good" : ping < 150 ? "ok" : "bad";
+  const route = stats.route === "direct" ? "Doğrudan" : stats.route === "relayed" ? "Aracılı" : "Bağlanıyor";
+  return (
+    <span
+      className={`quality ${grade}`}
+      title={`Ses tamponu ${stats.bufferMs} ms · kayıp paket ${stats.lost} (kurtarılan ${stats.recovered})`}
+    >
+      <Bars grade={grade} />
+      {route} · {stats.pingMs ?? "–"} ms
+    </span>
+  );
+}
+
+function Bars({ grade }: { grade: "good" | "ok" | "bad" }) {
+  const lit = grade === "good" ? 3 : grade === "ok" ? 2 : 1;
+  return (
+    <span className="bars" aria-hidden="true">
+      {[0, 1, 2].map((i) => (
+        <span key={i} className={i < lit ? "on" : ""} />
+      ))}
+    </span>
   );
 }
 
@@ -96,16 +167,18 @@ export function IncomingCall({ call, toast }: { call: CallInfo; toast: (text: st
 
   return (
     <div className="overlay">
-      <div className="incoming">
-        <Avatar id={call.peer} name={call.name} size={96} />
+      <div className="incoming" role="alertdialog" aria-label={`${call.name} arıyor`}>
+        <span className="label accent">Gelen arama</span>
+        <Avatar id={call.peer} name={call.name} size={72} />
         <h2>{call.name}</h2>
-        <p className="pulse">seni arıyor</p>
-        <div className="controls">
-          <button className="control hang-up" onClick={() => run(api.declineCall())} title="Reddet">
-            <Icon name="hangUp" size={24} />
+        <div className="incoming-actions">
+          <button className="wide-button danger" onClick={() => run(api.declineCall())}>
+            <Icon name="hangUp" size={18} />
+            Reddet
           </button>
-          <button className="control answer" onClick={() => run(api.acceptCall())} title="Aç" autoFocus>
-            <Icon name="phone" size={24} />
+          <button className="wide-button live" onClick={() => run(api.acceptCall())} autoFocus>
+            <Icon name="phone" size={18} />
+            Aç
           </button>
         </div>
       </div>
@@ -113,31 +186,96 @@ export function IncomingCall({ call, toast }: { call: CallInfo; toast: (text: st
   );
 }
 
-/** The main area when nothing is going on. */
-export function Home({ state }: { state: AppState }) {
-  const online = state.contacts.filter((c) => c.state === "friend" && c.online);
+/** The main area when no call is going on: who's around, and how to get started. */
+export function Home({ state, toast }: { state: AppState; toast: (text: string) => void }) {
+  const friends = state.contacts.filter((c) => c.state === "friend");
+  const online = friends.filter((c) => c.online).sort((a, b) => a.name.localeCompare(b.name, "tr"));
+  const run = (p: Promise<unknown>) => p.catch((e) => toast(describeError(e)));
+
   return (
     <main className="home">
-      <h1>nevar?</h1>
+      <header className="stage-bar">
+        <span className="label">Lobi</span>
+        <span className="stage-meta">
+          {online.length} / {friends.length} çevrimiçi
+        </span>
+      </header>
+
       {online.length > 0 ? (
-        <p>
-          {online.map((c) => c.name).join(", ")} çevrimiçi. Aramak için soldaki telefon simgesine bas.
-        </p>
+        <div className="lobby">
+          {online.map((c) => (
+            <LobbyCard key={c.id} contact={c} onCall={() => run(api.startCall(c.id))} />
+          ))}
+        </div>
       ) : (
-        <p>Şu an kimse çevrimiçi değil. Arkadaşların uygulamayı açınca burada göreceksin.</p>
+        <GettingStarted id={state.me.id} hasFriends={friends.length > 0} />
       )}
+    </main>
+  );
+}
+
+function LobbyCard({ contact: c, onCall }: { contact: Contact; onCall: () => void }) {
+  return (
+    <div className="lobby-card">
+      <Avatar id={c.id} name={c.name} size={48} online />
+      <strong>{c.name}</strong>
+      <button className="wide-button live outline" onClick={onCall}>
+        <Icon name="phone" size={16} />
+        Ara
+      </button>
+    </div>
+  );
+}
+
+function GettingStarted({ id, hasFriends }: { id: string; hasFriends: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    await navigator.clipboard.writeText(id);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <div className="getting-started">
+      <h1>{hasFriends ? "Şu an kimse çevrimiçi değil." : "Arkadaşlarını ekle, konuşmaya başla."}</h1>
+      <p>
+        {hasFriends
+          ? "Arkadaşların uygulamayı açtığında burada görünecekler."
+          : "nevar sunucu kullanmaz: arkadaşınla bilgisayarlarınız birbirine doğrudan bağlanır."}
+      </p>
+
+      <div className="code-card">
+        <span className="label">Arkadaş kodun</span>
+        <code>{id}</code>
+        <button className="wide-button live outline" onClick={copy}>
+          <Icon name={copied ? "check" : "copy"} size={16} />
+          {copied ? "Kopyalandı" : "Kopyala"}
+        </button>
+      </div>
+
       <ol className="steps">
         <li>
-          <strong>Kodunu paylaş.</strong> Soldaki “Arkadaş kodum”a basınca kopyalanır.
+          <span className="step-no">01</span>
+          <span>
+            <strong>Kodunu gönder</strong>
+            Yukarıdaki kodu arkadaşına WhatsApp'tan at.
+          </span>
         </li>
         <li>
-          <strong>Arkadaşının kodunu ekle.</strong> En alttaki kutuya yapıştır.
+          <span className="step-no">02</span>
+          <span>
+            <strong>Onun kodunu ekle</strong>
+            Soldaki “Arkadaş ekle” kutusuna yapıştır.
+          </span>
         </li>
         <li>
-          <strong>Ara.</strong> İkiniz de çevrimiçiyken telefon simgesine bas.
+          <span className="step-no">03</span>
+          <span>
+            <strong>Ara</strong>
+            İkiniz de çevrimiçiyken burada görünür, tek tıkla ararsın.
+          </span>
         </li>
       </ol>
-    </main>
+    </div>
   );
 }
 
