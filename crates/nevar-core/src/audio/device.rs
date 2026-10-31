@@ -1,6 +1,6 @@
 //! Mic and speaker streams via cpal (WASAPI on Windows).
 
-use std::sync::mpsc::SyncSender;
+use std::{sync::mpsc::SyncSender, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use cpal::{
@@ -14,11 +14,19 @@ use super::{FRAME_SAMPLES, Frame, SAMPLE_RATE};
 use crate::voice::Playout;
 
 /// A running audio stream. Audio stops when this is dropped.
+///
+/// The stream itself lives on the thread that opened it, which waits until this handle is
+/// dropped and then closes it. cpal sets up COM per thread on Windows, so a stream is opened
+/// and closed on one thread that stays alive the whole time.
 pub struct AudioStream {
-    _stream: Stream,
+    /// Dropping this wakes the owning thread, which closes the stream.
+    _stop: std::sync::mpsc::Sender<()>,
     pub device_name: String,
     pub config: StreamConfig,
 }
+
+/// What a device thread reports back once its stream is running.
+type Opened = (String, StreamConfig);
 
 pub struct DeviceList {
     pub inputs: Vec<String>,
@@ -74,9 +82,49 @@ fn device_name(device: &Device) -> String {
         .unwrap_or_else(|_| "unknown device".into())
 }
 
+/// Opening a device takes milliseconds. A driver that never answers (a stuck USB mic, a
+/// device another app holds) must fail the call with a message instead of freezing it.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Opens a stream with `open` on a thread of its own, which then keeps it until the returned
+/// handle is dropped. Gives up after [`OPEN_TIMEOUT`]; if the device answers later after all,
+/// that thread closes the stream right away.
+fn open_on_own_thread(
+    what: &'static str,
+    open: impl FnOnce() -> Result<(Stream, Opened)> + Send + 'static,
+) -> Result<AudioStream> {
+    let (opened_tx, opened_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::Builder::new().name(format!("audio-{what}")).spawn(move || match open() {
+        Ok((stream, opened)) => {
+            if opened_tx.send(Ok(opened)).is_ok() {
+                // Runs until the handle is dropped (the channel closes).
+                let _ = stop_rx.recv();
+            }
+            drop(stream);
+        }
+        Err(e) => {
+            let _ = opened_tx.send(Err(e));
+        }
+    })?;
+    match opened_rx.recv_timeout(OPEN_TIMEOUT) {
+        Ok(Ok((device_name, config))) => Ok(AudioStream { _stop: stop_tx, device_name, config }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => {
+            warn!("the {what} didn't respond within {OPEN_TIMEOUT:?}");
+            bail!("the {what} didn't respond (another app may be holding it, or it was unplugged)")
+        }
+    }
+}
+
 /// Opens a mic and sends 20 ms mono 48 kHz frames to `frames`.
 /// Frames are dropped (not queued) if the receiver falls behind.
 pub fn start_capture(choice: &DeviceChoice, frames: SyncSender<Frame>) -> Result<AudioStream> {
+    let choice = choice.clone();
+    open_on_own_thread("microphone", move || open_capture(&choice, frames))
+}
+
+fn open_capture(choice: &DeviceChoice, frames: SyncSender<Frame>) -> Result<(Stream, Opened)> {
     let host = cpal::default_host();
     let device = find_device(choice, host.input_devices()?, host.default_input_device(), "microphone")?;
     let supported = pick_input_config(&device)?;
@@ -96,7 +144,7 @@ pub fn start_capture(choice: &DeviceChoice, frames: SyncSender<Frame>) -> Result
 
     let device_name = device_name(&device);
     info!(%device_name, ?config, %format, "mic started");
-    Ok(AudioStream { _stream: stream, device_name, config })
+    Ok((stream, (device_name, config)))
 }
 
 /// Prefers a native 48 kHz config (no resampling); otherwise takes the device default.
@@ -218,7 +266,12 @@ impl Linear {
 }
 
 /// Opens speakers or headphones and plays whatever `playout` produces.
-pub fn start_playback(choice: &DeviceChoice, mut playout: Playout) -> Result<AudioStream> {
+pub fn start_playback(choice: &DeviceChoice, playout: Playout) -> Result<AudioStream> {
+    let choice = choice.clone();
+    open_on_own_thread("speakers", move || open_playback(&choice, playout))
+}
+
+fn open_playback(choice: &DeviceChoice, mut playout: Playout) -> Result<(Stream, Opened)> {
     let host = cpal::default_host();
     let device = find_device(choice, host.output_devices()?, host.default_output_device(), "speaker")?;
     let channels = device.default_output_config()?.channels();
@@ -249,12 +302,50 @@ pub fn start_playback(choice: &DeviceChoice, mut playout: Playout) -> Result<Aud
 
     let device_name = device_name(&device);
     info!(%device_name, ?config, "speakers started");
-    Ok(AudioStream { _stream: stream, device_name, config })
+    Ok((stream, (device_name, config)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plays an inaudibly quiet tone on the default speakers and checks that the device keeps
+    /// pulling audio from the stream's own thread. Needs a sound card:
+    /// `cargo test -p nevar-core speakers_keep_playing -- --ignored`.
+    #[test]
+    #[ignore]
+    fn speakers_keep_playing() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::{
+            audio::codec::{Encoder, MAX_PACKET},
+            voice::{Controls, JitterBuffer, Levels, Sources},
+        };
+
+        let jitter = Arc::new(Mutex::new(JitterBuffer::default()));
+        let sources = Sources::default();
+        sources.add(iroh::SecretKey::from_bytes(&[9; 32]).public(), jitter.clone()).unwrap();
+        let levels = Arc::new(Levels::default());
+        let playout = Playout::new(sources, Arc::new(Controls::default()), levels.clone(), None);
+        let speakers = start_playback(&None, playout).unwrap();
+
+        // Feed a frame every 20 ms for a second, like the network would.
+        let mut encoder = Encoder::new().unwrap();
+        let mut buf = [0u8; MAX_PACKET];
+        let mut heard = 0.0f32;
+        for i in 0..50u32 {
+            let mut frame = [0.0; FRAME_SAMPLES];
+            for (n, s) in frame.iter_mut().enumerate() {
+                *s = 0.002 * ((i as usize * FRAME_SAMPLES + n) as f32 * 0.06).sin();
+            }
+            let len = encoder.encode(&frame, &mut buf).unwrap();
+            jitter.lock().unwrap().push(i, bytes::Bytes::copy_from_slice(&buf[..len]), false);
+            std::thread::sleep(Duration::from_millis(20));
+            heard = heard.max(levels.speaker());
+        }
+        drop(speakers);
+        assert!(heard > 0.0, "the speaker callback never played our audio");
+    }
 
     #[test]
     fn resampler_produces_the_right_number_of_samples() {
