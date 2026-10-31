@@ -14,10 +14,11 @@
       {
         "label": "main",
         "title": "nevar",
-        "width": 1040,
-        "height": 700,
-        "minWidth": 420,
-        "minHeight": 540
+        "width": 380,
+        "height": 660,
+        "minWidth": 340,
+        "minHeight": 540,
+        "decorations": false
       }
     ],
     "security": {

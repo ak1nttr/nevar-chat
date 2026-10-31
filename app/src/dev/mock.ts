@@ -6,6 +6,15 @@ import type { AppState, CallStats, Devices } from "../api";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "home";
 
+// Headless Edge won't open a window narrower than about 500px, so scripts/shot.sh passes the app's real
+// window size as `?frame=380x660` and the app is drawn in a box of that size.
+const frame = new URLSearchParams(location.search).get("frame")?.match(/^(\d+)x(\d+)$/);
+if (frame) {
+  const style = document.createElement("style");
+  style.textContent = `html,body{background:#888}#root{width:${frame[1]}px;height:${frame[2]}px;overflow:hidden;background:#fff}.app,.loading{height:100%!important}`;
+  document.head.append(style);
+}
+
 const me = { id: "21cb7ffb12beccbafa316c0ac7e1289379009d52626a86df8e231316b1d06598", name: "Akın", online: true };
 const friends = [
   { id: "cb72014711aa0e5c2b9d8f3e4a1b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b", name: "Emre", state: "friend", online: true },

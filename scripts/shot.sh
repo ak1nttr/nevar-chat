@@ -2,7 +2,7 @@
 # Renders UI scenes from the dev mock to PNGs with headless Edge (no window appears).
 # Usage: scripts/shot.sh <out-dir> [scene...]
 #   scenes: home call incoming ringing settings empty update (default: home call incoming settings)
-#   WIDTH / HEIGHT env vars set the window size (default 1040x700).
+#   WIDTH / HEIGHT env vars set the window size (default 380x660).
 set -uo pipefail
 
 OUT="$1"
@@ -20,11 +20,15 @@ fi
 
 win_out="$(cygpath -w "$OUT")"
 profile="$(cygpath -w "${TMPDIR:-/tmp}")\\nevar-shot-profile"
+w="${WIDTH:-380}"
+h="${HEIGHT:-660}"
+# Edge has a minimum window width, so the window may be wider; the app is framed at w x h inside it.
+win_w=$((w < 520 ? 520 : w))
 for scene in "${SCENES[@]}"; do
   "$EDGE" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
-    --window-size="${WIDTH:-1040},${HEIGHT:-700}" --virtual-time-budget=2500 \
+    --window-size="${win_w},${h}" --virtual-time-budget=2500 \
     --user-data-dir="$profile" \
-    --screenshot="${win_out}\\${scene}.png" "http://localhost:1420/?scene=${scene}" > /dev/null 2>&1 ||
+    --screenshot="${win_out}\\${scene}.png" "http://localhost:1420/?scene=${scene}&frame=${w}x${h}" > /dev/null 2>&1 ||
     echo "failed: $scene" >&2
 done
 ls "$OUT"

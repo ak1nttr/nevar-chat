@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { api, AppState, Devices, Mode, Settings, describeError } from "../api";
 import { vkFromKeyboard, vkFromMouse, vkLabel } from "../keys";
 import { Icon } from "./Icon";
+import { TopBar } from "./Mark";
 
 interface Props {
   state: AppState;
@@ -10,7 +11,8 @@ interface Props {
   toast: (text: string) => void;
 }
 
-export function SettingsPanel({ state, onClose, toast }: Props) {
+/** Settings as a page in the same window; Esc or the "Arkadaşlar" link goes back. */
+export function SettingsPage({ state, onClose, toast }: Props) {
   const [devices, setDevices] = useState<Devices | null>(null);
   const [name, setName] = useState(state.me.name);
   const [version, setVersion] = useState("");
@@ -40,14 +42,14 @@ export function SettingsPanel({ state, onClose, toast }: Props) {
   };
 
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="panel" role="dialog" aria-label="Ayarlar">
-        <header className="panel-head">
-          <h2>Ayarlar</h2>
-          <button className="icon-button" onClick={onClose} title="Kapat (Esc)">
-            <Icon name="close" size={18} />
-          </button>
-        </header>
+    <main className="screen settings">
+      <TopBar />
+      <div className="settings-body">
+        <button className="crumb" onClick={onClose} title="Geri (Esc)">
+          <Icon name="back" size={14} />
+          Arkadaşlar
+        </button>
+        <h1 className="title">Ayarlar</h1>
 
         <Group label="Profil">
           <Field label="Görünen adın" hint="Arkadaşların seni bu adla görür.">
@@ -79,7 +81,7 @@ export function SettingsPanel({ state, onClose, toast }: Props) {
               onChange={(speakers) => update({ speakers })}
             />
           </Field>
-          <p className="note">
+          <p className="hint">
             Bluetooth kulaklığın mikrofonu, kulaklığı düşük kaliteli “telefon” moduna alır. Mümkünse ayrı bir mikrofon
             seç.
           </p>
@@ -112,12 +114,12 @@ export function SettingsPanel({ state, onClose, toast }: Props) {
             ))}
           </div>
           {settings.mode === "voiceActivity" && (
-            <p className="note">Sesini algılayınca açılır, susunca kapanır. Klavye ve fan sesi geçmez.</p>
+            <p className="hint">Sesini algılayınca açılır, susunca kapanır. Klavye ve fan sesi geçmez.</p>
           )}
           {settings.mode === "pushToTalk" && (
             <KeyPicker value={settings.push_to_talk_key} onChange={(key) => update({ push_to_talk_key: key })} />
           )}
-          {settings.mode === "open" && <p className="note">Mikrofonun görüşme boyunca hep açık kalır.</p>}
+          {settings.mode === "open" && <p className="hint">Mikrofonun görüşme boyunca hep açık kalır.</p>}
         </Group>
 
         <Group label="Ses temizleme">
@@ -141,19 +143,21 @@ export function SettingsPanel({ state, onClose, toast }: Props) {
           />
         </Group>
 
-        <footer className="panel-foot">
+        <footer className="settings-foot">
           <span>nevar {version}</span>
-          <span>Sorun olursa: %APPDATA%\chat.nevar.app\nevar.log</span>
+          <span>
+            Sorun olursa: <code>%APPDATA%\chat.nevar.app\nevar.log</code>
+          </span>
         </footer>
       </div>
-    </div>
+    </main>
   );
 }
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="group">
-      <h3 className="label">{label}</h3>
+      <h2>{label}</h2>
       {children}
     </section>
   );
@@ -167,7 +171,7 @@ function Field(props: { label: string; hint?: string; value?: string; children: 
         {props.value && <span className="field-value">{props.value}</span>}
       </span>
       {props.children}
-      {props.hint && <span className="field-hint">{props.hint}</span>}
+      {props.hint && <span className="hint">{props.hint}</span>}
     </label>
   );
 }

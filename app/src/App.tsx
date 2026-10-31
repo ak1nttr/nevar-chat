@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useAppState, useToasts } from "./hooks";
-import { Sidebar } from "./components/Sidebar";
-import { CallStage, Home, IncomingCall } from "./components/Call";
-import { SettingsPanel } from "./components/SettingsPanel";
+import { Home } from "./components/Home";
+import { CallScreen } from "./components/Call";
+import { SettingsPage } from "./components/SettingsPage";
 import { UpdateBanner } from "./components/UpdateBanner";
 
 export default function App() {
@@ -15,17 +15,19 @@ export default function App() {
     return <div className="loading">nevar</div>;
   }
 
+  // One screen at a time: a call (ringing either way, or live) takes the whole window.
   const call = state.call;
-  const inCall = call != null && call.phase !== "incoming";
 
   return (
-    <div className={inCall ? "app in-call" : "app"}>
-      <Sidebar state={state} onSettings={() => setSettingsOpen(true)} toast={push} />
-      {inCall ? <CallStage state={state} call={call} toast={push} /> : <Home state={state} toast={push} />}
-
-      <UpdateBanner inCall={inCall} />
-      {call?.phase === "incoming" && <IncomingCall call={call} toast={push} />}
-      {settingsOpen && <SettingsPanel state={state} onClose={() => setSettingsOpen(false)} toast={push} />}
+    <div className="app">
+      <UpdateBanner inCall={call != null} />
+      {call ? (
+        <CallScreen state={state} call={call} toast={push} />
+      ) : settingsOpen ? (
+        <SettingsPage state={state} onClose={() => setSettingsOpen(false)} toast={push} />
+      ) : (
+        <Home state={state} onSettings={() => setSettingsOpen(true)} toast={push} />
+      )}
 
       <div className="toasts" aria-live="polite">
         {toasts.map((t) => (

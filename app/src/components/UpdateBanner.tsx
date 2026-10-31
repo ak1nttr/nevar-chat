@@ -51,7 +51,7 @@ export function UpdateBanner({ inCall }: { inCall: boolean }) {
           <span>
             {failed ? "Güncelleme indirilemedi." : `Yeni sürüm hazır: ${update.version}`}
           </span>
-          <button onClick={install} disabled={inCall} title={inCall ? "Görüşme bitince güncelle" : undefined}>
+          <button className="btn primary" onClick={install} disabled={inCall} title={inCall ? "Görüşme bitince güncelle" : undefined}>
             {failed ? "Tekrar dene" : "Güncelle"}
           </button>
         </>
