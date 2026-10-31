@@ -4,11 +4,15 @@ use std::str::FromStr;
 
 use nevar_core::{
     EndpointId,
-    service::{AppState, CallStatsView, Event, Service},
+    service::{AppState, CallStatsView, Event, MessageView, MicTestView, Service},
     store::Settings,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    AppHandle, Emitter, Manager, State, WindowEvent,
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
 
 /// Commands return errors as plain text for the UI to show.
 type CmdResult<T = ()> = Result<T, String>;
@@ -116,6 +120,79 @@ fn hang_up(service: State<Service>) {
     service.hang_up();
 }
 
+#[tauri::command]
+fn set_volume(service: State<Service>, id: String, volume: f32) -> CmdResult {
+    service.set_volume(&parse_id(&id)?, volume);
+    Ok(())
+}
+
+#[tauri::command]
+fn send_message(service: State<Service>, id: String, text: String) -> CmdResult {
+    service.send_message(&parse_id(&id)?, &text).map_err(err)
+}
+
+#[tauri::command]
+fn get_messages(service: State<Service>, id: String) -> CmdResult<Vec<MessageView>> {
+    Ok(service.messages(&parse_id(&id)?))
+}
+
+#[tauri::command]
+fn mark_read(service: State<Service>, id: String) -> CmdResult {
+    service.mark_read(&parse_id(&id)?);
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_mic_test(service: State<'_, Service>) -> CmdResult {
+    service.start_mic_test().map_err(err)
+}
+
+#[tauri::command]
+fn stop_mic_test(service: State<Service>) {
+    service.stop_mic_test();
+}
+
+#[tauri::command]
+fn get_mic_test(service: State<Service>) -> Option<MicTestView> {
+    service.mic_test()
+}
+
+/// Brings the window back from the tray (or from behind other windows).
+fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The tray icon keeps nevar reachable while its window is closed: click to open,
+/// right-click for the menu with the real quit.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "nevar'ı aç", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Çıkış", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("nevar")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 fn forward_event(app: &AppHandle, event: Event) {
     match event {
         Event::StateChanged => {
@@ -171,13 +248,19 @@ pub fn run() {
     tauri::Builder::default()
         // A second copy would fight the first over the same identity: focus the first instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            show_main(app);
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
+        // Closing the window keeps nevar running in the tray, so friends can still reach you.
+        // Quitting is in the tray menu.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let handle = app.handle().clone();
@@ -185,6 +268,7 @@ pub fn run() {
                 forward_event(&handle, e)
             }))?;
             app.manage(service);
+            build_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -203,6 +287,13 @@ pub fn run() {
             accept_call,
             decline_call,
             hang_up,
+            set_volume,
+            send_message,
+            get_messages,
+            mark_read,
+            start_mic_test,
+            stop_mic_test,
+            get_mic_test,
         ])
         .build(tauri::generate_context!())
         .expect("error while building nevar")

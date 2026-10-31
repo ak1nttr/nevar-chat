@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, AppState, Devices, Mode, Settings, describeError } from "../api";
+import { api, AppState, Devices, MicTest as MicTestStats, Mode, Settings, describeError } from "../api";
 import { vkFromKeyboard, vkFromMouse, vkLabel } from "../keys";
 import { Icon } from "./Icon";
 import { TopBar } from "./Mark";
+import { displayLevel } from "./VoiceLane";
 
 interface Props {
   state: AppState;
@@ -97,6 +98,7 @@ export function SettingsPage({ state, onClose, toast }: Props) {
               onChange={(e) => update({ output_volume: Number(e.target.value) })}
             />
           </Field>
+          <MicTest inCall={state.call != null} toast={toast} />
         </Group>
 
         <Group label="Mikrofon ne zaman açık?">
@@ -198,6 +200,65 @@ function DeviceSelect(props: {
         <path d="M3 4.5l3 3 3-3" />
       </svg>
     </span>
+  );
+}
+
+/** Hear yourself the way friends will: through noise suppression, the codec and back. */
+function MicTest({ inCall, toast }: { inCall: boolean; toast: (text: string) => void }) {
+  const [running, setRunning] = useState(false);
+  const [test, setTest] = useState<MicTestStats | null>(null);
+
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => api.getMicTest().then(setTest).catch(() => {}), 100);
+    return () => {
+      clearInterval(timer);
+      api.stopMicTest().catch(() => {});
+    };
+  }, [running]);
+
+  // A call takes the mic over.
+  useEffect(() => {
+    if (inCall) setRunning(false);
+  }, [inCall]);
+
+  const toggle = async () => {
+    if (running) {
+      setRunning(false);
+      setTest(null);
+      return;
+    }
+    try {
+      await api.startMicTest();
+      setRunning(true);
+    } catch (e) {
+      toast(describeError(e));
+    }
+  };
+
+  const level = displayLevel(test?.level ?? 0);
+  return (
+    <div className="mic-test">
+      <div className="mic-test-row">
+        <span className="field-head">Mikrofon testi</span>
+        <button className="btn ghost" onClick={toggle} disabled={inCall && !running}>
+          {running ? "Durdur" : "Kendini dinle"}
+        </button>
+      </div>
+      {running && (
+        <>
+          <div className="mic-meter" aria-hidden="true">
+            <span className={test?.transmitting ? "on" : ""} style={{ width: `${Math.round(level * 100)}%` }} />
+          </div>
+          <span className="hint">
+            {test?.transmitting
+              ? "Bu ses görüşmede karşıya gider."
+              : "Şu an gönderilmez: sessiz, kapalı ya da bas-konuş tuşu basılı değil."}{" "}
+            Sesini kulaklıkla dinle, hoparlörde yankı yapar.
+          </span>
+        </>
+      )}
+    </div>
   );
 }
 

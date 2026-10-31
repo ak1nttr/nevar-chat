@@ -73,24 +73,38 @@ impl Levels {
     }
 }
 
-/// Where our voice goes: one connection per person in the call.
+/// Where our voice goes: one connection per person in the call, and for a mic
+/// test, straight back into a local jitter buffer.
 #[derive(Clone, Default)]
-pub struct Destinations(Arc<Mutex<Vec<Connection>>>);
+pub struct Destinations {
+    conns: Arc<Mutex<Vec<Connection>>>,
+    loopback: Arc<Mutex<Option<Arc<Mutex<JitterBuffer>>>>>,
+}
 
 impl Destinations {
     pub fn add(&self, conn: Connection) {
-        let mut conns = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conns = self.conns.lock().unwrap_or_else(|e| e.into_inner());
         let id = conn.remote_id();
         conns.retain(|c| c.remote_id() != id);
         conns.push(conn);
     }
 
     pub fn remove(&self, id: &EndpointId) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).retain(|c| c.remote_id() != *id);
+        self.conns.lock().unwrap_or_else(|e| e.into_inner()).retain(|c| c.remote_id() != *id);
+    }
+
+    /// Also delivers every packet to `jitter`, as if it had come back over the network.
+    pub fn set_loopback(&self, jitter: Option<Arc<Mutex<JitterBuffer>>>) {
+        *self.loopback.lock().unwrap_or_else(|e| e.into_inner()) = jitter;
     }
 
     fn send(&self, packet: Bytes) {
-        for conn in self.0.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        if let Some(jitter) = &*self.loopback.lock().unwrap_or_else(|e| e.into_inner()) {
+            let seq = u32::from_le_bytes(packet[1..5].try_into().expect("voice header"));
+            let end_of_speech = packet[5] & FLAG_END_OF_SPEECH != 0;
+            jitter.lock().unwrap_or_else(|e| e.into_inner()).push(seq, packet.slice(VOICE_HEADER..), end_of_speech);
+        }
+        for conn in self.conns.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             match conn.send_datagram(packet.clone()) {
                 Ok(()) => {}
                 // The service notices the dropped connection and takes it out of the call.

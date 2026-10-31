@@ -6,11 +6,12 @@ import { TopBar } from "./Mark";
 interface Props {
   state: AppState;
   onSettings: () => void;
+  onChat: (id: string) => void;
   toast: (text: string) => void;
 }
 
 /** The page you see when not in a call: your friends, who can be called, and your code. */
-export function Home({ state, onSettings, toast }: Props) {
+export function Home({ state, onSettings, onChat, toast }: Props) {
   const { me, contacts } = state;
   const byName = (a: Contact, b: Contact) => a.name.localeCompare(b.name, "tr");
   const friends = contacts.filter((c) => c.state === "friend");
@@ -60,7 +61,7 @@ export function Home({ state, onSettings, toast }: Props) {
         ) : (
           <ul className="friends">
             {[...online, ...offline].map((c) => (
-              <FriendRow key={c.id} contact={c} run={run} />
+              <FriendRow key={c.id} contact={c} run={run} onChat={() => onChat(c.id)} />
             ))}
             {outgoing.map((c) => (
               <li className="row offline" key={c.id}>
@@ -88,7 +89,13 @@ export function Home({ state, onSettings, toast }: Props) {
   );
 }
 
-function FriendRow({ contact: c, run }: { contact: Contact; run: (p: Promise<unknown>) => void }) {
+interface FriendRowProps {
+  contact: Contact;
+  run: (p: Promise<unknown>) => void;
+  onChat: () => void;
+}
+
+function FriendRow({ contact: c, run, onChat }: FriendRowProps) {
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   if (confirmRemove) {
@@ -108,7 +115,14 @@ function FriendRow({ contact: c, run }: { contact: Contact; run: (p: Promise<unk
   return (
     <li className={c.online ? "row" : "row offline"}>
       <span className={c.online ? "dot online" : "dot"} />
-      <span className="row-name">{c.name}</span>
+      <button className="row-open" onClick={onChat} title={`${c.name} ile mesajlaş`}>
+        <span className="row-name">{c.name}</span>
+        {c.unread > 0 && (
+          <span className="unread" aria-label={`${c.unread} okunmamış mesaj`}>
+            {c.unread > 99 ? "99+" : c.unread}
+          </span>
+        )}
+      </button>
       <button
         className="icon-btn reveal"
         title="Arkadaşlıktan çıkar"
@@ -117,7 +131,9 @@ function FriendRow({ contact: c, run }: { contact: Contact; run: (p: Promise<unk
       >
         <Icon name="close" size={14} />
       </button>
-      {c.online ? (
+      {c.online && c.inCall ? (
+        <span className="row-note busy">görüşmede</span>
+      ) : c.online ? (
         <button className="call-btn" onClick={() => run(api.startCall(c.id))} aria-label={`${c.name} kişisini ara`}>
           <Icon name="phone" size={14} />
           Ara

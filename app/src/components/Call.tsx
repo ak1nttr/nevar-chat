@@ -118,6 +118,8 @@ export function CallScreen({ state, call, toast }: Props) {
                   levels={active ? histories[m.id] : undefined}
                   sweepAt={tick}
                   compact={compact}
+                  volume={m.volume}
+                  onVolume={active ? (v) => run(api.setVolume(m.id, v)) : undefined}
                 />
               ))}
               {call.ringing.map((p, i) => (

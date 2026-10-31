@@ -19,6 +19,8 @@ pub struct Stored {
     /// Everyone I have any relation with, by ID.
     pub contacts: BTreeMap<EndpointId, Contact>,
     pub settings: Settings,
+    /// How loud each person plays in calls, when not 1.0. Kept for guests too.
+    pub volumes: BTreeMap<EndpointId, f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -51,6 +51,8 @@ pub enum Control {
     Members { call: CallId, members: Vec<EndpointId> },
     /// I left `call`, or stopped ringing you into it.
     Leave { call: CallId },
+    /// A text message. `id` is random, so a message delivered twice is recognized.
+    Chat { id: u64, text: String },
 }
 
 pub async fn write(send: &mut SendStream, msg: &Control) -> Result<()> {

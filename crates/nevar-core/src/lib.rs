@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod chat;
 pub mod identity;
 pub mod node;
 pub mod probe;

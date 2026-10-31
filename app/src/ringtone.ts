@@ -25,6 +25,11 @@ function chime(at: number, notes: number[], volume: number) {
   });
 }
 
+/** One short, quiet note for a new message. */
+export function messageChime() {
+  chime(audio().currentTime + 0.02, [988], 0.08);
+}
+
 /** Repeats a ring every couple of seconds until the returned function is called. */
 export function startRinging(kind: "incoming" | "outgoing"): () => void {
   const notes = kind === "incoming" ? [784, 659] : [440, 440];

@@ -54,10 +54,15 @@ export interface Toast {
   text: string;
 }
 
-/** Short-lived messages: backend notices plus anything the UI reports. */
-export function useToasts() {
+/**
+ * Short-lived messages: backend notices plus anything the UI reports.
+ * `onNotice` sees each backend notice first and returns false to keep it out of the toasts.
+ */
+export function useToasts(onNotice?: (n: Notice) => boolean) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextId = useRef(0);
+  const filter = useRef(onNotice);
+  filter.current = onNotice;
 
   const push = useCallback((text: string) => {
     const id = nextId.current++;
@@ -66,7 +71,9 @@ export function useToasts() {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen<Notice>("notice", (e) => push(describeNotice(e.payload)));
+    const unlisten = listen<Notice>("notice", (e) => {
+      if (filter.current?.(e.payload) ?? true) push(describeNotice(e.payload));
+    });
     return () => {
       unlisten.then((f) => f());
     };

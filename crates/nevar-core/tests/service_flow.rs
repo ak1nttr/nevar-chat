@@ -150,10 +150,28 @@ async fn friends_and_call_signaling() {
     b.service.set_name("Burak K").unwrap();
     a.wait_for("A sees new name", |s| contact(s, &b_id).is_some_and(|c| c.name == "Burak K")).await;
 
-    // A removes B: gone on both sides.
+    // Messages: A writes, B sees it unread until the chat is opened, and replies.
+    a.service.send_message(&b_id, "  selam
+nasılsın  ").unwrap();
+    b.wait_for("B has an unread message", |s| contact(s, &a_id).is_some_and(|c| c.unread == 1)).await;
+    b.wait_notice(Notice::Message { from: a_id.to_string(), name: "Ayse".into(), text: "selam
+nasılsın".into() })
+        .await;
+    let got = b.service.messages(&a_id);
+    assert_eq!((got.len(), got[0].from_me, got[0].text.as_str()), (1, false, "selam
+nasılsın"));
+    b.service.mark_read(&a_id);
+    assert_eq!(contact(&b.service.state(), &a_id).unwrap().unread, 0);
+    b.service.send_message(&a_id, "iyiyim").unwrap();
+    a.wait_for("A got the reply", |_| a.service.messages(&b_id).len() == 2).await;
+    assert!(a.service.messages(&b_id).iter().map(|m| m.from_me).eq([true, false]));
+    assert!(a.service.send_message(&b_id, "   ").is_err(), "empty messages aren't sent");
+
+    // A removes B: gone on both sides, and A's messages with B too.
     a.service.remove_contact(&b_id);
     b.wait_for("B no longer has A", |s| contact(s, &a_id).is_none()).await;
     assert!(contact(&a.service.state(), &b_id).is_none());
+    assert!(a.service.messages(&b_id).is_empty());
 
     tokio::join!(a.service.shutdown(), b.service.shutdown());
 }
@@ -167,7 +185,8 @@ async fn group_call_reaches_everyone_and_survives_leavers() {
     // Ayse knows both; Burak and Cem don't know each other.
     befriend(&a, &b).await;
     befriend(&a, &c).await;
-    let (b_id, c_id) = (b.id(), c.id());
+    let (a_id, b_id, c_id) = (a.id(), b.id(), c.id());
+    assert!(!contact(&c.service.state(), &a_id).unwrap().in_call);
 
     // A one-to-one call to start with.
     a.service.call(&b_id).unwrap();
@@ -176,6 +195,8 @@ async fn group_call_reaches_everyone_and_survives_leavers() {
     a.wait_for("A talks with B", |s| members(s) == ["Burak"]).await;
     b.wait_for("B talks with A", |s| members(s) == ["Ayse"]).await;
     assert_eq!(a.service.state().call.unwrap().phase, CallPhase::Active);
+    // Her other friends can see she's busy.
+    c.wait_for("C sees A in a call", |s| contact(s, &a_id).is_some_and(|c| c.in_call)).await;
 
     // Ayse rings Cem in. Cem sees who's already talking.
     a.service.call(&c_id).unwrap();
@@ -206,6 +227,7 @@ async fn group_call_reaches_everyone_and_survives_leavers() {
     // Ayse leaves: Cem is alone, so his call ends too.
     a.service.hang_up();
     c.wait_for("C's call ends", |s| s.call.is_none()).await;
+    b.wait_for("B sees A free again", |s| contact(s, &a_id).is_some_and(|c| !c.in_call)).await;
 
     tokio::join!(a.service.shutdown(), b.service.shutdown(), c.service.shutdown());
 }

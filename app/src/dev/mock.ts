@@ -1,9 +1,9 @@
 // Dev-only fake backend, so the UI can be designed in a plain browser.
 // Loaded only by `pnpm dev` outside Tauri. Pick a scene with
-// `?scene=home|call|group|incoming|incoming-group|ringing|settings|empty|update`.
+// `?scene=home|chat|call|group|incoming|incoming-group|ringing|settings|empty|update`.
 
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { AppState, CallStats, Devices } from "../api";
+import type { AppState, CallStats, Devices, Message } from "../api";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "home";
 
@@ -24,11 +24,24 @@ const friends = [
   { id: "e0c4d7a12b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e", name: "Deniz Kaya", state: "friend", online: false },
   { id: "77d1a9b03c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f", name: "İrem", state: "incoming", online: false },
   { id: "5f0e2c8a4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a", name: "Burak", state: "outgoing", online: false },
-] as AppState["contacts"];
+].map((f) => ({ inCall: false, unread: 0, ...f })) as AppState["contacts"];
+// Selin is talking with someone else; Emre wrote while we were away.
+friends[1].inCall = scene === "home";
+friends[0].unread = scene === "home" ? 2 : 0;
 
-const person = (f: { id: string; name: string }) => ({ id: f.id, name: f.name });
-// Someone in the group call who isn't one of our friends.
-const guest = { id: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", name: "Kaan" };
+const person = (f: { id: string; name: string }) => ({ id: f.id, name: f.name, volume: 1 });
+// Someone in the group call who isn't one of our friends, turned down a little.
+const guest = { id: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", name: "Kaan", volume: 0.7 };
+
+const minutesAgo = (m: number) => Date.now() - m * 60_000;
+const messages: Message[] = [
+  { key: "t1", fromMe: false, text: "akşam maç var, girecek misin?", atMs: minutesAgo(26 * 60) },
+  { key: "m1", fromMe: true, text: "girerim, 9 gibi", atMs: minutesAgo(26 * 60 - 3) },
+  { key: "t2", fromMe: false, text: "selam\nbugün de girelim mi?", atMs: minutesAgo(14) },
+  { key: "t3", fromMe: false, text: "Selin de gelecekmiş", atMs: minutesAgo(13) },
+  { key: "m2", fromMe: true, text: "olur, yarım saate bilgisayardayım", atMs: minutesAgo(2) },
+];
+let micTestOn = false;
 
 function callFor(scene: string): AppState["call"] {
   const call = { caller: null, members: [], ringing: [], sinceMs: null };
@@ -116,6 +129,19 @@ mockIPC(
         return state.call?.phase === "active" ? stats() : null;
       case "list_devices":
         return devices;
+      case "get_messages":
+        return messages;
+      case "send_message":
+        messages.push({ key: `m${messages.length}`, fromMe: true, text: (args as { text: string }).text, atMs: Date.now() });
+        return;
+      case "start_mic_test":
+        micTestOn = true;
+        return;
+      case "stop_mic_test":
+        micTestOn = false;
+        return;
+      case "get_mic_test":
+        return micTestOn ? { level: 0.05 + 0.03 * Math.sin(Date.now() / 120), transmitting: true } : null;
       case "plugin:app|version":
         return "0.2.1";
       case "plugin:updater|check":

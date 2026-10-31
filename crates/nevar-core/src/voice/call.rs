@@ -114,6 +114,27 @@ impl Call {
         Ok(())
     }
 
+    /// For a mic test: plays our own voice back, after the full trip through cleanup,
+    /// the codec and a jitter buffer, so we hear what others would.
+    pub fn set_loopback(&self, on: bool) {
+        // Our own voice gets a mixer slot of its own, under a key nobody else has.
+        let me = loopback_id();
+        if on {
+            let jitter = Arc::new(Mutex::new(JitterBuffer::default()));
+            if self.sources.add(me, jitter.clone()).is_ok() {
+                self.destinations.set_loopback(Some(jitter));
+            }
+        } else {
+            self.destinations.set_loopback(None);
+            self.sources.remove(&me);
+        }
+    }
+
+    /// Scales one person's voice (1.0 as sent, 0 silent, up to 2.0).
+    pub fn set_volume(&self, id: &EndpointId, volume: f32) {
+        self.sources.set_volume(id, volume);
+    }
+
     pub fn remove_peer(&self, id: &EndpointId) {
         let Some(link) = self.links.lock().unwrap_or_else(|e| e.into_inner()).remove(id) else { return };
         self.destinations.remove(id);
@@ -151,4 +172,10 @@ impl Drop for Call {
             link.receiver.abort();
         }
     }
+}
+
+/// The mixer slot for our own voice during a mic test. Derived from a fixed key, so it
+/// can't collide with a real person.
+fn loopback_id() -> EndpointId {
+    iroh::SecretKey::from_bytes(&[0x6c; 32]).public()
 }

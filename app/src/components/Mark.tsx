@@ -70,7 +70,13 @@ function WindowButtons() {
       <button className="icon-btn" onClick={() => win.minimize()} title="Küçült" aria-label="Küçült">
         <Icon name="minimize" size={15} />
       </button>
-      <button className="icon-btn close" onClick={() => win.close()} title="Kapat" aria-label="Kapat">
+      {/* Closing hides to the tray (see lib.rs); quitting is in the tray menu. */}
+      <button
+        className="icon-btn close"
+        onClick={() => win.close()}
+        title="Kapat (nevar tepside açık kalır)"
+        aria-label="Kapat"
+      >
         <Icon name="close" size={15} />
       </button>
     </>

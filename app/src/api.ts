@@ -22,11 +22,31 @@ export interface Contact {
   name: string;
   state: ContactState;
   online: boolean;
+  /** In a call (or being rung into one) right now. */
+  inCall: boolean;
+  /** Messages from them not read yet. */
+  unread: number;
 }
 
 export interface Person {
   id: string;
   name: string;
+  /** How loud they play for us in calls: 1 as sent, 0 to 2. */
+  volume: number;
+}
+
+export interface Message {
+  /** Unique within the chat. */
+  key: string;
+  fromMe: boolean;
+  text: string;
+  atMs: number;
+}
+
+export interface MicTest {
+  level: number;
+  /** Whether this would go out in a call right now. */
+  transmitting: boolean;
 }
 
 export interface CallInfo {
@@ -86,6 +106,7 @@ export type Notice =
   | { kind: "noAnswer"; name: string }
   | { kind: "missedCall"; name: string }
   | { kind: "connectionLost"; name: string }
+  | { kind: "message"; from: string; name: string; text: string }
   | { kind: "error"; message: string };
 
 export const api = {
@@ -104,6 +125,13 @@ export const api = {
   acceptCall: () => invoke<void>("accept_call"),
   declineCall: () => invoke<void>("decline_call"),
   hangUp: () => invoke<void>("hang_up"),
+  setVolume: (id: string, volume: number) => invoke<void>("set_volume", { id, volume }),
+  sendMessage: (id: string, text: string) => invoke<void>("send_message", { id, text }),
+  getMessages: (id: string) => invoke<Message[]>("get_messages", { id }),
+  markRead: (id: string) => invoke<void>("mark_read", { id }),
+  startMicTest: () => invoke<void>("start_mic_test"),
+  stopMicTest: () => invoke<void>("stop_mic_test"),
+  getMicTest: () => invoke<MicTest | null>("get_mic_test"),
 };
 
 /** Turns backend error text into something to show the user, in Turkish. */
@@ -114,6 +142,10 @@ export function describeError(e: unknown): string {
     ["your own code", "Bu senin kendi kodun."],
     ["already friends", "Zaten arkadaşsınız."],
     ["already in a call", "Zaten bir görüşmedesin."],
+    ["already in the call", "Zaten görüşmede."],
+    ["answer or decline the incoming call first", "Önce gelen aramayı aç ya da reddet."],
+    ["only message friends", "Sadece arkadaşlarına mesaj atabilirsin."],
+    ["message is empty", "Mesaj boş."],
     ["is offline", "Arkadaşın şu an çevrimdışı."],
     ["only call friends", "Sadece arkadaşlarını arayabilirsin."],
     ["nobody is calling", "Seni arayan kimse yok."],
@@ -138,6 +170,8 @@ export function describeNotice(n: Notice): string {
       return `Cevapsız arama: ${n.name}`;
     case "connectionLost":
       return `${n.name} ile bağlantı koptu.`;
+    case "message":
+      return `${n.name}: ${n.text}`;
     case "error":
       return describeError(n.message);
   }

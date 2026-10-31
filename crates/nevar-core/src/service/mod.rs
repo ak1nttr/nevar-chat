@@ -34,6 +34,7 @@ use tracing::{debug, info, warn};
 use crate::{
     EndpointId, Node,
     audio::device::{self, DeviceList},
+    chat::{self, History, HistoryStore, Message},
     identity,
     node::Route,
     ptt,
@@ -74,6 +75,9 @@ pub enum Notice {
     NoAnswer { name: String },
     MissedCall { name: String },
     ConnectionLost { name: String },
+    /// A text message arrived. `from` is their friend code, so the UI can tell
+    /// whether that chat is already open.
+    Message { from: String, name: String, text: String },
     Error { message: String },
 }
 
@@ -106,13 +110,38 @@ pub struct ContactView {
     pub name: String,
     pub state: ContactState,
     pub online: bool,
+    /// They're in a call (or being rung into one) right now.
+    pub in_call: bool,
+    /// Messages from them not read yet.
+    pub unread: u32,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageView {
+    /// Unique within this chat.
+    pub key: String,
+    pub from_me: bool,
+    pub text: String,
+    pub at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonView {
     pub id: String,
     pub name: String,
+    /// How loud they play for us in calls: 1.0 as sent, 0 to 2.
+    pub volume: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicTestView {
+    /// The cleaned-up mic signal.
+    pub level: f32,
+    /// Whether this would go out in a call right now (voice detected, push-to-talk held, ...).
+    pub transmitting: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -266,6 +295,8 @@ impl CallSlot {
 /// A live connection to one peer.
 struct Peer {
     conn: Connection,
+    /// They told us they're in a call.
+    in_call: bool,
     tx: mpsc::UnboundedSender<Control>,
     tasks: [JoinHandle<()>; 2],
 }
@@ -288,6 +319,11 @@ struct Inner {
     dialing: Mutex<HashSet<EndpointId>>,
     /// Call members who aren't our friends, with the names they gave. Only kept during a call.
     guests: Mutex<HashMap<EndpointId, String>>,
+    history_store: HistoryStore,
+    /// Taken on its own, never together with another lock.
+    history: Mutex<History>,
+    /// Mic and speakers open for a mic test, outside any call. Taken on its own.
+    mic_test: Mutex<Option<Call>>,
     // Lock order: `stored`, then `peers`, then `call`, then `guests`. Never send while
     // holding `call`: sending takes `peers`.
     call: Mutex<CallSlot>,
@@ -331,6 +367,11 @@ impl Service {
         if stored.name.trim().is_empty() {
             stored.name = default_name();
         }
+        let history_store = HistoryStore::new(data_dir);
+        let history = history_store.load().unwrap_or_else(|e| {
+            warn!("message history unreadable, starting fresh: {e:#}");
+            History::default()
+        });
         let node = Node::bind(key).await?;
         let controls = Arc::new(Controls::default());
         let ptt = ptt::PushToTalk::start(controls.clone());
@@ -342,6 +383,9 @@ impl Service {
             peers: Mutex::default(),
             dialing: Mutex::default(),
             guests: Mutex::default(),
+            history_store,
+            history: Mutex::new(history),
+            mic_test: Mutex::new(None),
             call: Mutex::new(CallSlot::Idle),
             controls,
             ptt,
@@ -367,6 +411,7 @@ impl Service {
     }
 
     pub async fn shutdown(&self) {
+        self.stop_mic_test();
         self.hang_up();
         self.0.peers.lock().unwrap().clear();
         self.0.node.shutdown().await;
@@ -375,6 +420,10 @@ impl Service {
     // ----- state for the UI -----
 
     pub fn state(&self) -> AppState {
+        let unread: HashMap<EndpointId, u32> = {
+            let history = self.0.history.lock().unwrap();
+            history.chats.iter().map(|(id, c)| (*id, c.unread)).collect()
+        };
         let stored = self.0.stored.lock().unwrap();
         let peers = self.0.peers.lock().unwrap();
         let contacts = stored
@@ -386,6 +435,8 @@ impl Service {
                 name: c.name.clone(),
                 state: c.state,
                 online: c.state == ContactState::Friend && peers.contains_key(id),
+                in_call: c.state == ContactState::Friend && peers.get(id).is_some_and(|p| p.in_call),
+                unread: unread.get(id).copied().unwrap_or(0),
             })
             .collect();
         drop(peers);
@@ -393,8 +444,10 @@ impl Service {
         let call = {
             let slot = self.0.call.lock().unwrap();
             let guests = self.0.guests.lock().unwrap();
+            let volume = |id: &EndpointId| stored.volumes.get(id).copied().unwrap_or(1.0);
             let person = |id: &EndpointId| PersonView {
                 id: id.to_string(),
+                volume: volume(id),
                 name: stored
                     .contacts
                     .get(id)
@@ -413,6 +466,7 @@ impl Service {
                         .iter()
                         .map(|m| PersonView {
                             id: m.id.to_string(),
+                            volume: volume(&m.id),
                             name: stored.contacts.get(&m.id).map_or_else(|| m.name.clone(), |c| c.name.clone()),
                         })
                         .collect(),
@@ -514,7 +568,64 @@ impl Service {
         self.update_stored(|s| s.settings = settings.clone());
         if old.mic != settings.mic || old.speakers != settings.speakers {
             self.restart_call_audio();
+            if self.0.mic_test.lock().unwrap().is_some() {
+                self.stop_mic_test();
+                if let Err(e) = self.start_mic_test() {
+                    self.notice(Notice::Error { message: format!("{e:#}") });
+                }
+            }
         }
+    }
+
+    /// How loud `id` plays in calls (1.0 as sent, 0 silent, up to 2.0). Remembered.
+    pub fn set_volume(&self, id: &EndpointId, volume: f32) {
+        let volume = volume.clamp(0.0, 2.0);
+        self.update_stored(|s| {
+            if (volume - 1.0).abs() < 0.01 {
+                s.volumes.remove(id);
+            } else {
+                s.volumes.insert(*id, volume);
+            }
+        });
+        if let CallSlot::InCall(GroupCall { audio: Some(audio), .. }) = &*self.0.call.lock().unwrap() {
+            audio.set_volume(id, volume);
+        }
+    }
+
+    fn volume_of(&self, id: &EndpointId) -> f32 {
+        self.0.stored.lock().unwrap().volumes.get(id).copied().unwrap_or(1.0)
+    }
+
+    // ----- mic test -----
+
+    /// Opens the mic and plays it back through the whole voice pipeline, so you hear
+    /// yourself as friends would. Not during a call.
+    pub fn start_mic_test(&self) -> Result<()> {
+        if !matches!(*self.0.call.lock().unwrap(), CallSlot::Idle) {
+            bail!("you're already in a call");
+        }
+        let mut test = self.0.mic_test.lock().unwrap();
+        if test.is_none() {
+            let call = Call::start(&self.audio_devices(), self.0.controls.clone())
+                .map_err(|e| e.context("couldn't open your mic or speakers"))?;
+            call.set_loopback(true);
+            *test = Some(call);
+        }
+        drop(test);
+        self.changed();
+        Ok(())
+    }
+
+    pub fn stop_mic_test(&self) {
+        if self.0.mic_test.lock().unwrap().take().is_some() {
+            self.changed();
+        }
+    }
+
+    pub fn mic_test(&self) -> Option<MicTestView> {
+        let test = self.0.mic_test.lock().unwrap();
+        let s = test.as_ref()?.stats();
+        Some(MicTestView { level: s.mic_level, transmitting: s.transmitting })
     }
 
     /// Mute and deafen are per-session toggles, not saved settings.
@@ -582,9 +693,10 @@ impl Service {
         Ok(())
     }
 
-    /// Removes a friend or cancels a request we sent.
+    /// Removes a friend or cancels a request we sent, along with our messages with them.
     pub fn remove_contact(&self, id: &EndpointId) {
         self.leave_with(id);
+        self.update_history(|h| h.chats.remove(id).is_some());
         self.set_contact_state(*id, None);
         self.send_hello(*id);
         self.drop_peer(id, CLOSE_NOT_FRIENDS);
@@ -658,6 +770,75 @@ impl Service {
     fn is_call_guest(&self, id: &EndpointId, their_call: Option<CallId>) -> bool {
         let slot = self.0.call.lock().unwrap();
         slot.involves(id) || (their_call.is_some() && their_call == slot.call_id())
+    }
+
+    // ----- messages -----
+
+    /// Sends a text message to an online friend.
+    pub fn send_message(&self, to: &EndpointId, text: &str) -> Result<()> {
+        if self.contact_state(to) != Some(ContactState::Friend) {
+            bail!("you can only message friends");
+        }
+        let Some(text) = chat::clean_text(text) else { bail!("message is empty") };
+        if !self.0.peers.lock().unwrap().contains_key(to) {
+            bail!("{} is offline", self.display_name(to));
+        }
+        let id = new_call_id();
+        self.send(to, Control::Chat { id, text: text.clone() });
+        let message = Message { id, from_me: true, text, at_ms: unix_ms(SystemTime::now()) };
+        self.update_history(|h| h.push(*to, message));
+        Ok(())
+    }
+
+    /// Our messages with `with`, oldest first.
+    pub fn messages(&self, with: &EndpointId) -> Vec<MessageView> {
+        let history = self.0.history.lock().unwrap();
+        let Some(chat) = history.chats.get(with) else { return Vec::new() };
+        chat.messages
+            .iter()
+            .map(|m| MessageView {
+                key: format!("{}{}", if m.from_me { "m" } else { "t" }, m.id),
+                from_me: m.from_me,
+                text: m.text.clone(),
+                at_ms: m.at_ms,
+            })
+            .collect()
+    }
+
+    /// The chat with `with` is open: nothing in it is unread anymore.
+    pub fn mark_read(&self, with: &EndpointId) {
+        self.update_history(|h| h.mark_read(with));
+    }
+
+    fn on_chat(&self, from: EndpointId, id: u64, text: String) {
+        if self.contact_state(&from) != Some(ContactState::Friend) {
+            return;
+        }
+        let Some(text) = chat::clean_text(&text) else { return };
+        let message = Message { id, from_me: false, text: text.clone(), at_ms: unix_ms(SystemTime::now()) };
+        let mut is_new = false;
+        self.update_history(|h| {
+            is_new = h.push(from, message);
+            is_new
+        });
+        if is_new {
+            self.notice(Notice::Message { from: from.to_string(), name: self.display_name(&from), text });
+        }
+    }
+
+    /// Changes the message history and saves it, if `f` says something changed.
+    fn update_history(&self, f: impl FnOnce(&mut History) -> bool) {
+        let snapshot = {
+            let mut history = self.0.history.lock().unwrap();
+            if !f(&mut history) {
+                return;
+            }
+            history.clone()
+        };
+        if let Err(e) = self.0.history_store.save(&snapshot) {
+            warn!("saving messages failed: {e:#}");
+        }
+        self.changed();
     }
 
     // ----- calls -----
@@ -794,6 +975,8 @@ impl Service {
             g.audio.is_none()
         };
         if needs_audio && self.0.open_audio {
+            // A call takes over the mic and speakers from a mic test.
+            self.stop_mic_test();
             // Opening devices takes a moment; don't hold the lock for it.
             match Call::start(&self.audio_devices(), self.0.controls.clone()) {
                 Ok(audio) => {
@@ -807,13 +990,15 @@ impl Service {
                 }
             }
         }
+        let volume = self.volume_of(&peer);
         if let Some(g) = self.0.call.lock().unwrap().group(call)
             && let Some(audio) = &g.audio
         {
             // Call::add_peer spawns its receive task on the runtime.
             let _rt = self.0.rt.enter();
-            if let Err(e) = audio.add_peer(conn) {
-                warn!(peer = %peer.fmt_short(), "couldn't add to the call: {e:#}");
+            match audio.add_peer(conn) {
+                Ok(()) => audio.set_volume(&peer, volume),
+                Err(e) => warn!(peer = %peer.fmt_short(), "couldn't add to the call: {e:#}"),
             }
         }
         self.changed();
@@ -1079,7 +1264,7 @@ impl Service {
                 }
                 self.changed();
             }
-            Control::Hello { .. } => unreachable!("handled by on_message"),
+            Control::Hello { .. } | Control::Chat { .. } => unreachable!("handled by on_message"),
         }
     }
 
@@ -1162,7 +1347,7 @@ impl Service {
             }
             let writer = self.0.rt.spawn(write_loop(send, rx));
             let reader = self.0.rt.spawn(self.clone().read_loop(peer, conn.stable_id(), recv));
-            peers.insert(peer, Peer { conn: conn.clone(), tx, tasks: [writer, reader] });
+            peers.insert(peer, Peer { conn: conn.clone(), in_call: false, tx, tasks: [writer, reader] });
         }
         info!(peer = %peer.fmt_short(), "connected");
         self.send_hello(peer);
@@ -1234,10 +1419,14 @@ impl Service {
     fn on_message(&self, from: EndpointId, msg: Control) {
         match msg {
             Control::Hello { name, relation, call } => {
+                if let Some(peer) = self.0.peers.lock().unwrap().get_mut(&from) {
+                    peer.in_call = call.is_some();
+                }
                 let name = clean_name(&name).unwrap_or_else(|_| from.fmt_short().to_string());
                 self.reconcile(from, name, relation, call);
                 self.changed();
             }
+            Control::Chat { id, text } => self.on_chat(from, id, text),
             other => self.on_call_message(from, other),
         }
     }

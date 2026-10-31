@@ -15,6 +15,11 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-always-on-top",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "notification:default",
+    "core:window:allow-show",
+    "core:window:allow-is-focused",
+    "core:window:allow-is-visible",
+    "core:window:allow-unminimize"
   ]
 }

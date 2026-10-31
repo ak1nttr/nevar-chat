@@ -21,6 +21,8 @@ struct Source {
     decoder: Decoder,
     /// Their level as last played, stored as `f32` bits.
     level: Arc<AtomicU32>,
+    /// How loud we want them, set per person.
+    volume: f32,
 }
 
 /// The voices being played. The call adds and removes them; the speaker callback mixes them.
@@ -31,7 +33,7 @@ impl Sources {
     /// Starts playing whatever arrives in `jitter`. Returns that voice's live level (`f32` bits).
     pub fn add(&self, id: EndpointId, jitter: Arc<Mutex<JitterBuffer>>) -> Result<Arc<AtomicU32>> {
         let level = Arc::new(AtomicU32::new(0));
-        let source = Source { id, jitter, decoder: Decoder::new()?, level: level.clone() };
+        let source = Source { id, jitter, decoder: Decoder::new()?, level: level.clone(), volume: 1.0 };
         let mut sources = self.0.lock().unwrap_or_else(|e| e.into_inner());
         sources.retain(|s| s.id != id);
         sources.push(source);
@@ -40,6 +42,14 @@ impl Sources {
 
     pub fn remove(&self, id: &EndpointId) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).retain(|s| s.id != *id);
+    }
+
+    /// Scales one voice: 1.0 as sent, 0 silent, up to 2.0.
+    pub fn set_volume(&self, id: &EndpointId, volume: f32) {
+        let volume = volume.clamp(0.0, 2.0);
+        for s in self.0.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().filter(|s| s.id == *id) {
+            s.volume = volume;
+        }
     }
 }
 
@@ -101,6 +111,11 @@ impl Playout {
             if let Err(e) = result {
                 warn!("decode failed: {e:#}");
                 voice.fill(0.0);
+            }
+            if source.volume != 1.0 {
+                for s in &mut voice {
+                    *s *= source.volume;
+                }
             }
             source.level.store((rms(&voice) * volume).to_bits(), Ordering::Relaxed);
             for (mixed, s) in self.frame.iter_mut().zip(voice.iter()) {
@@ -168,6 +183,12 @@ mod tests {
         assert!(a > 0.05 && b > 0.05, "each voice should be heard: {a} {b}");
         // Two uncorrelated tones add up louder than either one.
         assert!(levels.speaker() > a.max(b), "mix {} vs {a} {b}", levels.speaker());
+
+        // A voice turned down to zero goes quiet; the other carries on.
+        sources.set_volume(&id(1), 0.0);
+        playout.fill(&mut out[..FRAME_SAMPLES]);
+        assert_eq!(f32::from_bits(sources.0.lock().unwrap()[0].level.load(Ordering::Relaxed)), 0.0);
+        assert!(f32::from_bits(sources.0.lock().unwrap()[1].level.load(Ordering::Relaxed)) > 0.05);
 
         // A removed voice stops contributing.
         sources.remove(&id(2));
