@@ -1,6 +1,10 @@
 # nevar
 
-Arkadaşlar arasında sesli sohbet. Sunucu yok, hesap yok: bilgisayarlar birbirine doğrudan, uçtan uca şifreli bağlanır.
+fuck discord, teamspeak, stoat
+stoat berbat çalışıyor delay var, discord trde yasaklı, teamspeak kötü ui ve paralı
+"**nevar**" en basiti, neredeyse hiç ram yemez ve gerçek zamanlı konuşma gibi hissettirir, anlıktır, hafiftir.
+
+arkadaşlar arasında sesli sohbet. Sunucu yok, hesap yok. Bilgisayarlar birbirine doğrudan, uçtan uca şifreli bağlanır.
 Sadece windowsta çalışır.
 
 ## Kurulum
