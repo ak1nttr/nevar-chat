@@ -1,37 +1,47 @@
-# nevar
+<h1 align="center">nevar</h1>
+<p align="center">Arkadaşlar arasında sesli sohbet. Sunucu yok, hesap yok.</p>
 
-fuck discord, teamspeak, stoat
-stoat berbat çalışıyor delay var, discord trde yasaklı, teamspeak kötü ui ve paralı
-"**nevar**" en basiti, neredeyse hiç ram yemez ve gerçek zamanlı konuşma gibi hissettirir, anlıktır, hafiftir.
+---
 
-arkadaşlar arasında sesli sohbet. Sunucu yok, hesap yok. Bilgisayarlar birbirine doğrudan, uçtan uca şifreli bağlanır.
-Sadece windowsta çalışır.
+*FUCK* `discord, teamspeak, stoat`<br>
+stoat berbat çalışıyor, delay var. discord TR'de yasaklı. teamspeak kötü UI ve paralı.
+
+**nevar** en basiti: neredeyse hiç RAM yemez, anlıktır, hafiftir, gerçek zamanlı konuşma gibi hissettirir. Bilgisayarlar birbirine doğrudan ve uçtan uca şifreli bağlanır.
+
+> [!WARNING]
+> Sadece Windows'ta çalışır.
 
 ## Kurulum
 
 [Releases](../../releases/latest) sayfasından `nevar_..._x64-setup.exe` dosyasını indirip çalıştır. Windows "bilinmeyen yayıncı" uyarısı verirse **Ek bilgi → Yine de çalıştır**. Yeni sürümler uygulama içinden otomatik gelir.
 
-## How it works
+## Nasıl çalışır
 
-- **Networking:** [iroh](https://iroh.computer). Peers are dialed by public key; NAT hole punching gives a direct path, with iroh's public relays as fallback. QUIC/TLS end to end.
-- **Voice:** Opus (libopus) at 32 kbps in 20 ms frames over QUIC datagrams, an adaptive jitter buffer with FEC recovery and loss concealment.
-- **Audio processing:** WebRTC AEC3 echo cancellation and AGC2 (via [sonora](https://crates.io/crates/sonora)), RNNoise noise suppression and voice activity detection (via [nnnoiseless](https://crates.io/crates/nnnoiseless)).
-- **App:** Tauri 2 + React/TypeScript; all networking and audio live in Rust.
+- **Ağ:** [iroh](https://iroh.computer). Eşler public key ile bağlanır; NAT hole punching doğrudan yol açar, olmazsa iroh'un public relay'leri devreye girer. Uçtan uca QUIC/TLS.
+- **Ses:** Opus (libopus), 32 kbps, 20 ms frame'ler halinde QUIC datagram'ları üzerinden. Adaptif jitter buffer, FEC ile kurtarma ve kayıp gizleme.
+- **Ses işleme:** WebRTC AEC3 yankı engelleme ve AGC2 ([sonora](https://crates.io/crates/sonora) ile), RNNoise gürültü bastırma ve ses algılama ([nnnoiseless](https://crates.io/crates/nnnoiseless) ile).
+- **Uygulama:** Tauri 2 + React/TypeScript. Tüm ağ ve ses kısmı Rust'ta.
 
-## Layout
+## Yapı
 
-- `crates/nevar-core`: networking, voice pipeline, friends/calls service
-- `crates/nevar-cli`: command-line test tool (network probe, calls)
-- `app/`: the desktop app (Tauri)
+| Klasör | İçerik |
+|---|---|
+| `crates/nevar-core` | Ağ, ses hattı, arkadaş/arama servisi |
+| `crates/nevar-cli` | Komut satırı test aracı (ağ testi, arama) |
+| `app/` | Masaüstü uygulaması (Tauri) |
 
-## Development
+## Geliştirme
 
-Needs Rust, Node + pnpm and the Visual Studio C++ Build Tools (with CMake; see `.cargo/config.toml`).
+Gerekenler: Rust, Node + pnpm, Visual Studio C++ Build Tools (CMake ile; bkz. `.cargo/config.toml`).
 
-```
+```bash
 cd app
 pnpm install
 pnpm tauri dev
 ```
 
-Tests (some need internet, they start real nodes): `cargo test -p nevar-core`
+Testler (bazıları internet ister, gerçek node'lar başlatır):
+
+```bash
+cargo test -p nevar-core
+```
