@@ -8,7 +8,7 @@ use nevar_core::{
     Connection, EndpointId, Node,
     audio::device,
     identity, probe,
-    voice::{AudioDevices, Call, Controls, JitterBuffer, Levels, Playout},
+    voice::{AudioDevices, Call, Controls, Levels, Playout, Sources},
 };
 
 #[derive(Parser)]
@@ -168,7 +168,8 @@ async fn run_probe(node: &Node, peer: EndpointId, duration: Duration) -> Result<
 async fn talk(conn: Connection, devices: &AudioDevices) -> Result<()> {
     let peer = conn.remote_id().fmt_short();
     let controls = std::sync::Arc::new(Controls::default());
-    let call = Call::start(conn, devices, controls)?;
+    let call = Call::start(devices, controls)?;
+    call.add_peer(conn.clone())?;
     println!("in a call with {peer}");
     println!("  mic:      {}", call.mic.device_name);
     println!("  speakers: {}", call.speakers.device_name);
@@ -178,24 +179,25 @@ async fn talk(conn: Connection, devices: &AudioDevices) -> Result<()> {
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                call.hang_up();
+                conn.close(0u32.into(), b"bye");
                 println!("\nhung up");
                 return Ok(());
             }
-            _ = call.ended() => {
+            _ = conn.closed() => {
                 println!("\n{peer} hung up");
                 return Ok(());
             }
             _ = ticker.tick() => {
                 let s = call.stats();
-                let ping = s.rtt.map_or("?".into(), |r| r.as_millis().to_string());
+                let Some(p) = s.peers.first() else { continue };
+                let ping = p.rtt.map_or("?".into(), |r| r.as_millis().to_string());
                 print!(
                     "\r{:<7} ping {:>3} ms  buffer {:>3} ms  lost {} (fixed {})  you {}{} them {}   ",
-                    s.route.to_string(),
+                    p.route.to_string(),
                     ping,
-                    s.jitter.target * 20,
-                    s.jitter.lost,
-                    s.jitter.recovered,
+                    p.jitter.target * 20,
+                    p.jitter.lost,
+                    p.jitter.recovered,
                     meter(s.mic_level),
                     if s.transmitting { "*" } else { " " },
                     meter(s.speaker_level),
@@ -231,10 +233,9 @@ async fn check_devices(devices: &AudioDevices) -> Result<()> {
 
     // Open both like a call would, but feed the speakers silence.
     let levels = std::sync::Arc::new(Levels::default());
-    let jitter = std::sync::Arc::new(std::sync::Mutex::new(JitterBuffer::default()));
     let controls = std::sync::Arc::new(Controls::default());
     let speakers =
-        device::start_playback(&devices.speakers, Playout::new(jitter, controls, levels, None)?)?;
+        device::start_playback(&devices.speakers, Playout::new(Sources::default(), controls, levels, None))?;
     println!("speakers OK: {} ({} ch)", speakers.device_name, speakers.config.channels);
 
     let (tx, rx) = std::sync::mpsc::sync_channel(8);

@@ -15,6 +15,7 @@ const paths = {
   back: "M15 5l-7 7 7 7",
   pin: "M12 17v5 M9 4h6 M10 4v6.5l-3.5 3.5V17h11v-3l-3.5-3.5V4",
   minimize: "M6 12h12",
+  userPlus: "M3 20c0-3 2.7-5 6-5s6 2 6 5 M9 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7 M19 8v6 M16 11h6",
 } as const;
 
 export type IconName = keyof typeof paths;

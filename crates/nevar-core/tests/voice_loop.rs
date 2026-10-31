@@ -11,7 +11,7 @@ use iroh::SecretKey;
 use nevar_core::{
     Node,
     audio::{FRAME_SAMPLES, Frame, SAMPLE_RATE, rms},
-    voice::{Controls, JitterBuffer, Levels, Playout, TransmitMode, receive, spawn_sender},
+    voice::{Controls, Destinations, JitterBuffer, Levels, Playout, Sources, TransmitMode, receive, spawn_sender},
 };
 
 const TONE_HZ: f32 = 440.0;
@@ -44,6 +44,7 @@ async fn tone_survives_the_trip() {
     let (conn_a, conn_b) = (conn_a.unwrap(), conn_b.unwrap());
 
     // B: receive into a jitter buffer.
+    let conn_b_id = conn_b.remote_id();
     let jitter = Arc::new(Mutex::new(JitterBuffer::default()));
     let levels = Arc::new(Levels::default());
     let receiver = tokio::spawn({
@@ -56,13 +57,15 @@ async fn tone_survives_the_trip() {
     controls.set_noise_suppression(false);
     controls.set_echo_cancellation(false);
     controls.set_auto_gain(false);
-    let mut playout = Playout::new(jitter.clone(), controls.clone(), levels, None).unwrap();
+    let sources = Sources::default();
+    sources.add(conn_b_id, jitter.clone()).unwrap();
+    let mut playout = Playout::new(sources, controls.clone(), levels, None);
 
     // A: a fake mic producing a frame every 20 ms.
     let (tx, rx) = sync_channel(3);
     let (_played_tx, played_rx) = sync_channel(1);
     let sender =
-        spawn_sender(conn_a.clone(), rx, played_rx, controls, Arc::new(Levels::default())).unwrap();
+        spawn_sender(Destinations::from(conn_a.clone()), rx, played_rx, controls, Arc::new(Levels::default())).unwrap();
 
     // B: a fake speaker pulling a frame every 20 ms.
     let mut heard = Vec::new();

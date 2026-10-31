@@ -1,13 +1,18 @@
 use std::{
-    sync::{Arc, Mutex, mpsc::sync_channel},
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
+        mpsc::sync_channel,
+    },
     time::Duration,
 };
 
 use anyhow::Result;
-use iroh::endpoint::Connection;
+use iroh::{EndpointId, endpoint::Connection};
 use tokio::task::JoinHandle;
 
-use super::{Controls, JitterBuffer, JitterStats, Levels, Playout, receive, spawn_sender};
+use super::{Controls, Destinations, JitterBuffer, JitterStats, Levels, Playout, Sources, receive, spawn_sender};
 use crate::{
     audio::device::{AudioStream, DeviceChoice, start_capture, start_playback},
     node::{Route, current_path},
@@ -25,81 +30,125 @@ pub struct AudioDevices {
     pub speakers: DeviceChoice,
 }
 
-/// A live voice call with one peer.
-/// Hangs up when dropped.
-pub struct Call {
+/// One person we're talking with.
+struct Link {
     conn: Connection,
     jitter: Arc<Mutex<JitterBuffer>>,
-    levels: Arc<Levels>,
+    level: Arc<AtomicU32>,
     receiver: JoinHandle<()>,
+}
+
+/// Live voice with any number of people: our mic goes to all of them, and their
+/// voices are mixed on our speakers. People join and leave with [`Call::add_peer`]
+/// and [`Call::remove_peer`]; the mic and speakers close when this is dropped.
+pub struct Call {
+    links: Mutex<HashMap<EndpointId, Link>>,
+    sources: Sources,
+    destinations: Destinations,
+    levels: Arc<Levels>,
     pub mic: AudioStream,
     pub speakers: AudioStream,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct CallStats {
+#[derive(Debug, Clone)]
+pub struct PeerStats {
+    pub id: EndpointId,
     pub route: Route,
     pub rtt: Option<Duration>,
     pub jitter: JitterStats,
+    /// Their voice as we last played it.
+    pub level: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallStats {
     pub mic_level: f32,
+    /// Everyone's voices together.
     pub speaker_level: f32,
     /// Our mic is going out right now (voice detected, push-to-talk held, ...).
     pub transmitting: bool,
+    pub peers: Vec<PeerStats>,
 }
 
 impl Call {
-    /// Starts sending and receiving audio on an established connection.
+    /// Opens the mic and speakers. Nobody hears anything until people are added.
     /// `controls` can be changed at any time while the call runs.
-    pub fn start(conn: Connection, devices: &AudioDevices, controls: Arc<Controls>) -> Result<Self> {
-        let jitter = Arc::new(Mutex::new(JitterBuffer::default()));
+    pub fn start(devices: &AudioDevices, controls: Arc<Controls>) -> Result<Self> {
+        let sources = Sources::default();
+        let destinations = Destinations::default();
         let levels = Arc::new(Levels::default());
 
         let (played_tx, played_rx) = sync_channel(ECHO_REFERENCE_QUEUE);
-        let playout = Playout::new(jitter.clone(), controls.clone(), levels.clone(), Some(played_tx))?;
+        let playout = Playout::new(sources.clone(), controls.clone(), levels.clone(), Some(played_tx));
         let speakers = start_playback(&devices.speakers, playout)?;
 
         let (frames_tx, frames_rx) = sync_channel(CAPTURE_QUEUE);
         // The sender thread exits on its own once the mic stream (and its sender) is dropped.
-        spawn_sender(conn.clone(), frames_rx, played_rx, controls, levels.clone())?;
+        spawn_sender(destinations.clone(), frames_rx, played_rx, controls, levels.clone())?;
         let mic = start_capture(&devices.mic, frames_tx)?;
 
+        Ok(Self { links: Mutex::default(), sources, destinations, levels, mic, speakers })
+    }
+
+    /// Starts talking with whoever is on the other end of `conn`.
+    /// Must be called inside a tokio runtime (it spawns the receive task).
+    pub fn add_peer(&self, conn: Connection) -> Result<()> {
+        let id = conn.remote_id();
+        let mut links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        if links.contains_key(&id) {
+            return Ok(());
+        }
+        let jitter = Arc::new(Mutex::new(JitterBuffer::default()));
+        let level = self.sources.add(id, jitter.clone())?;
         let receiver = tokio::spawn({
             let conn = conn.clone();
             let jitter = jitter.clone();
             async move {
                 if let Err(e) = receive(&conn, &jitter).await {
-                    tracing::warn!("voice receive stopped: {e:#}");
+                    tracing::warn!(peer = %conn.remote_id().fmt_short(), "voice receive stopped: {e:#}");
                 }
             }
         });
+        self.destinations.add(conn.clone());
+        links.insert(id, Link { conn, jitter, level, receiver });
+        Ok(())
+    }
 
-        Ok(Self { conn, jitter, levels, receiver, mic, speakers })
+    pub fn remove_peer(&self, id: &EndpointId) {
+        let Some(link) = self.links.lock().unwrap_or_else(|e| e.into_inner()).remove(id) else { return };
+        self.destinations.remove(id);
+        self.sources.remove(id);
+        link.receiver.abort();
     }
 
     pub fn stats(&self) -> CallStats {
-        let (route, rtt) = current_path(&self.conn);
+        let links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        let peers = links
+            .iter()
+            .map(|(id, link)| {
+                let (route, rtt) = current_path(&link.conn);
+                PeerStats {
+                    id: *id,
+                    route,
+                    rtt,
+                    jitter: link.jitter.lock().unwrap_or_else(|e| e.into_inner()).stats(),
+                    level: f32::from_bits(link.level.load(Ordering::Relaxed)),
+                }
+            })
+            .collect();
         CallStats {
-            route,
-            rtt,
-            jitter: self.jitter.lock().unwrap_or_else(|e| e.into_inner()).stats(),
             mic_level: self.levels.mic(),
             speaker_level: self.levels.speaker(),
             transmitting: self.levels.transmitting(),
+            peers,
         }
-    }
-
-    /// Resolves when the other side hangs up or the connection drops for good.
-    pub async fn ended(&self) {
-        self.conn.closed().await;
-    }
-
-    pub fn hang_up(self) {
-        self.conn.close(0u32.into(), b"bye");
     }
 }
 
 impl Drop for Call {
     fn drop(&mut self) {
-        self.receiver.abort();
+        for link in self.links.lock().unwrap_or_else(|e| e.into_inner()).values() {
+            link.receiver.abort();
+        }
     }
 }

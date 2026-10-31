@@ -1,5 +1,6 @@
 // Dev-only fake backend, so the UI can be designed in a plain browser.
-// Loaded only by `pnpm dev` outside Tauri. Pick a scene with `?scene=home|call|incoming|ringing|settings|empty`.
+// Loaded only by `pnpm dev` outside Tauri. Pick a scene with
+// `?scene=home|call|group|incoming|incoming-group|ringing|settings|empty|update`.
 
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { AppState, CallStats, Devices } from "../api";
@@ -25,17 +26,38 @@ const friends = [
   { id: "5f0e2c8a4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a", name: "Burak", state: "outgoing", online: false },
 ] as AppState["contacts"];
 
+const person = (f: { id: string; name: string }) => ({ id: f.id, name: f.name });
+// Someone in the group call who isn't one of our friends.
+const guest = { id: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", name: "Kaan" };
+
+function callFor(scene: string): AppState["call"] {
+  const call = { caller: null, members: [], ringing: [], sinceMs: null };
+  switch (scene) {
+    case "call":
+      return { ...call, phase: "active", members: [person(friends[0])], sinceMs: Date.now() - 754_000 };
+    case "group":
+      return {
+        ...call,
+        phase: "active",
+        members: [person(friends[0]), person(friends[1]), guest],
+        ringing: [person(friends[2])],
+        sinceMs: Date.now() - 1_954_000,
+      };
+    case "incoming":
+      return { ...call, phase: "incoming", caller: person(friends[1]) };
+    case "incoming-group":
+      return { ...call, phase: "incoming", caller: person(friends[1]), members: [person(friends[0]), guest] };
+    case "ringing":
+      return { ...call, phase: "outgoing", ringing: [person(friends[1])] };
+    default:
+      return null;
+  }
+}
+
 const state: AppState = {
   me,
   contacts: scene === "empty" ? [] : friends,
-  call:
-    scene === "call"
-      ? { peer: friends[0].id, name: friends[0].name, phase: "active", sinceMs: Date.now() - 754_000 }
-      : scene === "incoming"
-        ? { peer: friends[1].id, name: friends[1].name, phase: "incoming", sinceMs: null }
-        : scene === "ringing"
-          ? { peer: friends[1].id, name: friends[1].name, phase: "outgoing", sinceMs: null }
-          : null,
+  call: callFor(scene),
   settings: {
     mic: null,
     speakers: null,
@@ -57,19 +79,30 @@ const devices: Devices = {
   defaultOutput: "Kulaklık (EarPods)",
 };
 
-/** Steady levels for screenshots: the friend is talking, we're quiet. */
+/** Steady levels for screenshots: the first person is talking, the others and we are quiet. */
 function stats(): CallStats {
   const t = Date.now() / 1000;
   const talk = (phase: number) => 0.06 + 0.03 * Math.sin(t * 9 + phase);
+  const peers = (state.call?.members ?? []).map((m, i) => ({
+    id: m.id,
+    // The one who isn't our friend reaches us through a relay.
+    route: (m.id === guest.id ? "relayed" : "direct") as "relayed" | "direct",
+    pingMs: m.id === guest.id ? 48 : 6,
+    bufferMs: 20,
+    lost: 0,
+    recovered: 0,
+    level: i === 0 ? talk(i) : 0.002,
+  }));
   return {
-    route: "direct",
-    pingMs: 6,
+    route: peers.some((p) => p.route === "relayed") ? "relayed" : "direct",
+    pingMs: Math.max(6, ...peers.map((p) => p.pingMs)),
     bufferMs: 20,
     lost: 0,
     recovered: 0,
     micLevel: 0.004,
     speakerLevel: talk(0),
     transmitting: false,
+    peers,
   };
 }
 

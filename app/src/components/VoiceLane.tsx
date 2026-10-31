@@ -30,6 +30,32 @@ export function useHistory(value: number, running: boolean): number[] {
   return history;
 }
 
+/** Like `useHistory`, for a changing set of people at once, keyed by ID. Newcomers start silent. */
+export function useHistories(levels: Record<string, number>, running: boolean): Record<string, number[]> {
+  const latest = useRef(levels);
+  latest.current = levels;
+  const [histories, setHistories] = useState<Record<string, number[]>>({});
+
+  useEffect(() => {
+    setHistories({});
+    if (!running) return;
+    const timer = setInterval(
+      () =>
+        setHistories((old) => {
+          const next: Record<string, number[]> = {};
+          for (const [id, level] of Object.entries(latest.current)) {
+            next[id] = [...(old[id] ?? silence()).slice(1), level];
+          }
+          return next;
+        }),
+      100,
+    );
+    return () => clearInterval(timer);
+  }, [running]);
+
+  return histories;
+}
+
 /** A counter for the waiting sweep while the call isn't connected yet. */
 export function useTicker(running: boolean): number {
   const [tick, setTick] = useState(0);
@@ -48,18 +74,21 @@ interface Props {
   /** Voice history, 0..1 per bar. Without it the lane shows a waiting sweep at `sweepAt`. */
   levels?: number[];
   sweepAt?: number;
+  /** Shorter bars, for calls with several people. */
+  compact?: boolean;
 }
 
-export function VoiceLane({ label, note, noteTone, levels, sweepAt = 0 }: Props) {
+export function VoiceLane({ label, note, noteTone, levels, sweepAt = 0, compact }: Props) {
+  const tall = compact ? 24 : 50;
   const bars = levels
-    ? levels.map((v) => ({ h: Math.max(3, Math.round(v * 50)), cls: v > TALKING ? "bar live" : "bar" }))
+    ? levels.map((v) => ({ h: Math.max(3, Math.round(v * tall)), cls: v > TALKING ? "bar live" : "bar" }))
     : Array.from({ length: BARS }, (_, i) => {
         const d = Math.abs(i - (sweepAt % BARS));
         return { h: d === 0 ? 10 : d === 1 ? 6 : 3, cls: d <= 1 ? "bar near" : "bar" };
       });
 
   return (
-    <div>
+    <div className={compact ? "lane compact" : "lane"}>
       <div className="lane-head">
         <span>{label}</span>
         {note && <span className={noteTone}>{note}</span>}

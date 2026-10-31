@@ -3,11 +3,13 @@ use std::{fmt, time::Duration};
 use anyhow::{Context, Result};
 use iroh::{
     Endpoint, EndpointId, SecretKey,
+    dns::{DnsResolver, FallbackMode},
     endpoint::{Connection, presets},
 };
 
 /// ALPN for all nevar traffic. Bump the version on breaking protocol changes.
-pub const ALPN: &[u8] = b"nevar/0";
+/// 1: group calls (call IDs in the control messages).
+pub const ALPN: &[u8] = b"nevar/1";
 
 /// A running peer: one iroh endpoint that both dials and accepts.
 #[derive(Clone)]
@@ -26,7 +28,13 @@ impl Node {
 
     /// Binds the endpoint without waiting to get online.
     pub async fn bind(secret_key: SecretKey) -> Result<Self> {
+        // Friends and relays are found through DNS. Some routers and ISP resolvers time out
+        // or block those names, so public resolvers (Cloudflare, Google, Quad9, including over
+        // DNS-over-HTTPS, which an ISP can't tamper with) are asked from the start, alongside
+        // the system's, instead of only after it gives up.
+        let dns = DnsResolver::builder().with_system_defaults().with_fallback_mode(FallbackMode::Eager).build();
         let endpoint = Endpoint::builder(presets::N0)
+            .dns_resolver(dns)
             .secret_key(secret_key)
             .alpns(vec![ALPN.to_vec()])
             .bind()

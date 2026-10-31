@@ -24,10 +24,19 @@ export interface Contact {
   online: boolean;
 }
 
-export interface CallInfo {
-  peer: string;
+export interface Person {
+  id: string;
   name: string;
+}
+
+export interface CallInfo {
   phase: CallPhase;
+  /** Who is ringing us (incoming calls only). */
+  caller: Person | null;
+  /** The people we're talking with. For an incoming call: who else is already in it. */
+  members: Person[];
+  /** People we rang into the call who haven't answered yet. */
+  ringing: Person[];
   sinceMs: number | null;
 }
 
@@ -49,6 +58,18 @@ export interface CallStats {
   micLevel: number;
   speakerLevel: number;
   transmitting: boolean;
+  peers: PeerStats[];
+}
+
+export interface PeerStats {
+  id: string;
+  route: "direct" | "relayed" | "unknown";
+  pingMs: number | null;
+  bufferMs: number;
+  lost: number;
+  recovered: number;
+  /** Their voice as last played. */
+  level: number;
 }
 
 export interface Devices {
