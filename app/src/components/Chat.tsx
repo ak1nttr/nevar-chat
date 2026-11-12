@@ -13,10 +13,12 @@ interface Props {
   id: string;
   onBack: () => void;
   toast: (text: string) => void;
+  /** Inside the quick menu: no window bar. */
+  embedded?: boolean;
 }
 
 /** Messages with one friend. They only go through while both of you are online. */
-export function ChatPage({ state, id, onBack, toast }: Props) {
+export function ChatPage({ state, id, onBack, toast, embedded }: Props) {
   const friend = state.contacts.find((c) => c.id === id && c.state === "friend");
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
@@ -70,7 +72,7 @@ export function ChatPage({ state, id, onBack, toast }: Props) {
 
   return (
     <main className="screen chat">
-      <TopBar>
+      {!embedded && <TopBar>
         {friend.online && !friend.inCall && (
           <button
             className="icon-btn"
@@ -81,7 +83,7 @@ export function ChatPage({ state, id, onBack, toast }: Props) {
             <Icon name="phone" size={16} />
           </button>
         )}
-      </TopBar>
+      </TopBar>}
 
       <div className="chat-head">
         <button className="crumb" onClick={onBack} title="Geri (Esc)">

@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
-import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { api, AppState, CallInfo, CallStats, describeError, Person } from "../api";
 import { useCallStats, useElapsed } from "../hooks";
 import { vkLabel } from "../keys";
-import { startRinging } from "../ringtone";
 import { Icon } from "./Icon";
 import { TopBar } from "./Mark";
 import { BARS, displayLevel, TALKING, useHistories, useHistory, useTicker, VoiceLane } from "./VoiceLane";
@@ -15,10 +13,12 @@ interface Props {
   state: AppState;
   call: CallInfo;
   toast: (text: string) => void;
+  /** Folds the call into a strip so the rest of the app can be used. */
+  onFold: () => void;
 }
 
 /** The whole window while a call is ringing (either way) or going on, with one or more people. */
-export function CallScreen({ state, call, toast }: Props) {
+export function CallScreen({ state, call, toast, onFold }: Props) {
   const active = call.phase === "active";
   const incoming = call.phase === "incoming";
   const stats = useCallStats(active);
@@ -27,14 +27,18 @@ export function CallScreen({ state, call, toast }: Props) {
   const [adding, setAdding] = useState(false);
   const run = (p: Promise<unknown>) => p.catch((e) => toast(describeError(e)));
 
+  // Esc closes the add-people picker, else folds the call away like going back.
+  // Not while someone is calling us: that needs an answer.
   useEffect(() => {
-    if (call.phase === "outgoing") return startRinging("outgoing");
-    if (call.phase === "incoming") {
-      const stop = startRinging("incoming");
-      getCurrentWindow().requestUserAttention(UserAttentionType.Critical).catch(() => {});
-      return stop;
-    }
-  }, [call.phase]);
+    if (incoming) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (adding) setAdding(false);
+      else onFold();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [incoming, adding, onFold]);
 
   // Live levels, 0..1 on the display scale.
   const levels: Record<string, number> = {};
@@ -89,6 +93,12 @@ export function CallScreen({ state, call, toast }: Props) {
       <TopBar />
 
       <div className="live-body">
+        {!incoming && (
+          <button className="crumb live-crumb" onClick={onFold} title="Görüşme sürerken uygulamayı kullan (Esc)">
+            <Icon name="back" size={14} />
+            Arkadaşlar
+          </button>
+        )}
         <div className="live-meta">
           {active && stats ? <Quality stats={stats} /> : <span />}
           {active && <span className="timer">{formatDuration(elapsed)}</span>}
@@ -230,7 +240,7 @@ export function CallScreen({ state, call, toast }: Props) {
 }
 
 /** "Emre", "Emre ve Selin", "Emre, Selin ve Mert", "Emre, Selin ve 2 kişi daha". */
-function joinNames(names: string[]): string {
+export function joinNames(names: string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   if (names.length <= 3) return `${names.slice(0, -1).join(", ")} ve ${names[names.length - 1]}`;
   return `${names.slice(0, 2).join(", ")} ve ${names.length - 2} kişi daha`;
@@ -258,7 +268,7 @@ function Quality({ stats }: { stats: CallStats }) {
   );
 }
 
-function formatDuration(total: number): string {
+export function formatDuration(total: number): string {
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;

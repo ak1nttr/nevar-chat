@@ -1,11 +1,12 @@
 // Dev-only fake backend, so the UI can be designed in a plain browser.
 // Loaded only by `pnpm dev` outside Tauri. Pick a scene with
-// `?scene=home|chat|call|group|incoming|incoming-group|ringing|settings|empty|update`.
+// `?scene=home|chat|call|call-home|overlay|menu|group|incoming|incoming-group|ringing|settings|empty|update`.
 
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { AppState, CallStats, Devices, Message } from "../api";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "home";
+const overlayScene = scene === "overlay" || scene === "menu";
 
 // Headless Edge won't open a window narrower than about 500px, so scripts/shot.sh passes the app's real
 // window size as `?frame=380x660` and the app is drawn in a box of that size.
@@ -13,6 +14,12 @@ const frame = new URLSearchParams(location.search).get("frame")?.match(/^(\d+)x(
 if (frame) {
   const style = document.createElement("style");
   style.textContent = `html,body{background:#888}#root{width:${frame[1]}px;height:${frame[2]}px;overflow:hidden;background:#fff}.app,.loading{height:100%!important}`;
+  document.head.append(style);
+}
+// The overlay floats over a game: stand in a dark, busy backdrop for it.
+if (overlayScene) {
+  const style = document.createElement("style");
+  style.textContent = `html,body{background:repeating-linear-gradient(135deg,#2a3b2f 0 40px,#3d4f3a 40px 80px)!important}#root{background:transparent!important}`;
   document.head.append(style);
 }
 
@@ -27,7 +34,8 @@ const friends = [
 ].map((f) => ({ inCall: false, unread: 0, ...f })) as AppState["contacts"];
 // Selin is talking with someone else; Emre wrote while we were away.
 friends[1].inCall = scene === "home";
-friends[0].unread = scene === "home" ? 2 : 0;
+friends[0].unread = scene === "home" || scene === "call-home" ? 2 : 0;
+if (scene === "call-home") friends[0].inCall = true;
 
 const person = (f: { id: string; name: string }) => ({ id: f.id, name: f.name, volume: 1 });
 // Someone in the group call who isn't one of our friends, turned down a little.
@@ -47,6 +55,9 @@ function callFor(scene: string): AppState["call"] {
   const call = { caller: null, members: [], ringing: [], sinceMs: null };
   switch (scene) {
     case "call":
+    case "call-home":
+    case "overlay":
+    case "menu":
       return { ...call, phase: "active", members: [person(friends[0])], sinceMs: Date.now() - 754_000 };
     case "group":
       return {
@@ -80,6 +91,13 @@ const state: AppState = {
     echo_cancellation: true,
     auto_gain: true,
     output_volume: 1,
+    shortcuts: {
+      quick_menu: { ctrl: true, shift: true, alt: false, key: 0x20 },
+      toggle_mute: { ctrl: true, shift: true, alt: false, key: 0x4d },
+      toggle_deafen: { ctrl: true, shift: true, alt: false, key: 0x44 },
+      toggle_overlay: { ctrl: true, shift: true, alt: false, key: 0x4f },
+    },
+    overlay: { enabled: overlayScene, corner: "topLeft", show_voice: true, show_messages: true },
   },
   muted: false,
   deafened: false,
@@ -119,7 +137,7 @@ function stats(): CallStats {
   };
 }
 
-mockWindows("main");
+mockWindows(overlayScene ? "overlay" : "main");
 mockIPC(
   (cmd, args) => {
     switch (cmd) {
@@ -149,6 +167,8 @@ mockIPC(
       case "set_muted":
         state.muted = (args as { muted: boolean }).muted;
         return;
+      case "overlay_menu_open":
+        return scene === "menu";
       case "set_deafened":
         state.deafened = (args as { deafened: boolean }).deafened;
         return;

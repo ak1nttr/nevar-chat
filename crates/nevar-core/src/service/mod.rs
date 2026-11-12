@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use iroh::endpoint::{Connection, RecvStream, SendStream, Side};
 use serde::Serialize;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -39,6 +39,7 @@ use crate::{
     node::Route,
     ptt,
     store::{Contact, ContactState, Settings, Store, Stored},
+    audio::virtual_card::MicSource,
     voice::{AudioDevices, Call, Controls},
 };
 use control::{CallId, Control, Member, Relation};
@@ -311,6 +312,16 @@ impl Drop for Peer {
 
 type EventSink = Box<dyn Fn(Event) + Send + Sync>;
 
+/// Where calls get their sound.
+pub enum AudioMode {
+    /// The mic and speakers from the settings.
+    Devices,
+    /// None at all: calls track who's in them but never touch the sound card. For tests.
+    Off,
+    /// A virtual sound card; each call gets a fresh mic signal from this. For the test bot.
+    Virtual(Box<dyn Fn() -> Box<dyn MicSource> + Send + Sync>),
+}
+
 struct Inner {
     node: Node,
     store: Store,
@@ -330,8 +341,7 @@ struct Inner {
     controls: Arc<Controls>,
     ptt: ptt::PushToTalk,
     online: AtomicBool,
-    /// Off in tests: calls track who's in them but never touch the sound card.
-    open_audio: bool,
+    audio: AudioMode,
     on_event: EventSink,
     /// Every background task goes through this, so methods are safe to call from any
     /// thread, including a UI thread outside the async runtime.
@@ -344,7 +354,7 @@ pub struct Service(Arc<Inner>);
 impl Service {
     /// Loads identity and state from `data_dir` and starts connecting to friends.
     pub async fn start(data_dir: &Path, on_event: impl Fn(Event) + Send + Sync + 'static) -> Result<Self> {
-        Self::start_with(data_dir, true, on_event).await
+        Self::start_with(data_dir, AudioMode::Devices, on_event).await
     }
 
     /// Like [`Service::start`], but calls never open the mic or speakers. For tests.
@@ -352,12 +362,13 @@ impl Service {
         data_dir: &Path,
         on_event: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<Self> {
-        Self::start_with(data_dir, false, on_event).await
+        Self::start_with(data_dir, AudioMode::Off, on_event).await
     }
 
-    async fn start_with(
+    /// Starts with calls that use `audio` for sound. [`Service::start`] uses the sound card.
+    pub async fn start_with(
         data_dir: &Path,
-        open_audio: bool,
+        audio: AudioMode,
         on_event: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
@@ -390,7 +401,7 @@ impl Service {
             controls,
             ptt,
             online: AtomicBool::new(false),
-            open_audio,
+            audio,
             on_event: Box::new(on_event),
             rt: tokio::runtime::Handle::current(),
         }));
@@ -606,8 +617,7 @@ impl Service {
         }
         let mut test = self.0.mic_test.lock().unwrap();
         if test.is_none() {
-            let call = Call::start(&self.audio_devices(), self.0.controls.clone())
-                .map_err(|e| e.context("couldn't open your mic or speakers"))?;
+            let call = self.open_call_audio()?.context("this copy of nevar has no sound")?;
             call.set_loopback(true);
             *test = Some(call);
         }
@@ -637,6 +647,18 @@ impl Service {
     pub fn set_deafened(&self, deafened: bool) {
         self.0.controls.set_deafened(deafened);
         self.changed();
+    }
+
+    pub fn muted(&self) -> bool {
+        self.0.controls.muted()
+    }
+
+    pub fn deafened(&self) -> bool {
+        self.0.controls.deafened()
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.0.stored.lock().unwrap().settings.clone()
     }
 
     fn apply_settings(&self, s: &Settings) {
@@ -974,19 +996,20 @@ impl Service {
             g.since.get_or_insert_with(SystemTime::now);
             g.audio.is_none()
         };
-        if needs_audio && self.0.open_audio {
+        if needs_audio {
             // A call takes over the mic and speakers from a mic test.
             self.stop_mic_test();
             // Opening devices takes a moment; don't hold the lock for it.
-            match Call::start(&self.audio_devices(), self.0.controls.clone()) {
-                Ok(audio) => {
+            match self.open_call_audio() {
+                Ok(None) => {}
+                Ok(Some(audio)) => {
                     if let Some(g) = self.0.call.lock().unwrap().group(call) {
                         g.audio.get_or_insert(audio);
                     }
                 }
                 Err(e) => {
                     self.hang_up();
-                    return Err(e.context("couldn't open your mic or speakers"));
+                    return Err(e);
                 }
             }
         }
@@ -1119,6 +1142,18 @@ impl Service {
                 self.notice(Notice::Error { message: format!("{e:#}") });
                 return;
             }
+        }
+    }
+
+    /// Sound for a call or mic test, from whatever this service uses. `None` without sound.
+    fn open_call_audio(&self) -> Result<Option<Call>> {
+        let controls = self.0.controls.clone();
+        match &self.0.audio {
+            AudioMode::Devices => Call::start(&self.audio_devices(), controls)
+                .map(Some)
+                .map_err(|e| e.context("couldn't open your mic or speakers")),
+            AudioMode::Off => Ok(None),
+            AudioMode::Virtual(source) => Call::start_virtual(source(), controls).map(Some),
         }
     }
 

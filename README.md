@@ -31,3 +31,13 @@ pnpm tauri dev
 ```
 
 Tests (some need internet, they start real nodes): `cargo test -p nevar-core`
+
+### Test bot
+
+A pretend friend for trying the app alone. It runs the app's real service with a virtual sound card: it accepts friend requests, answers calls and says your voice back 1.5 s later, replies to messages, and can call you, play a tune, or fake a bad network.
+
+```
+cargo run --release -p nevar-cli -- bot
+```
+
+Paste the code it prints into "Arkadaş ekle", then type `yardım` in its terminal for the commands. For a group call, start a second bot with `--profile 2` and add it to a call with the first.

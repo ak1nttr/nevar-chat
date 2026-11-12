@@ -61,7 +61,14 @@ export function Home({ state, onSettings, onChat, toast }: Props) {
         ) : (
           <ul className="friends">
             {[...online, ...offline].map((c) => (
-              <FriendRow key={c.id} contact={c} run={run} onChat={() => onChat(c.id)} />
+              <FriendRow
+                key={c.id}
+                contact={c}
+                inCall={state.call?.phase === "active"}
+                callBusy={state.call != null && state.call.phase !== "active"}
+                run={run}
+                onChat={() => onChat(c.id)}
+              />
             ))}
             {outgoing.map((c) => (
               <li className="row offline" key={c.id}>
@@ -91,11 +98,15 @@ export function Home({ state, onSettings, onChat, toast }: Props) {
 
 interface FriendRowProps {
   contact: Contact;
+  /** We're in a live call, so calling adds them to it. */
+  inCall: boolean;
+  /** A call is ringing (either way), so no new calls can start. */
+  callBusy: boolean;
   run: (p: Promise<unknown>) => void;
   onChat: () => void;
 }
 
-function FriendRow({ contact: c, run, onChat }: FriendRowProps) {
+function FriendRow({ contact: c, inCall, callBusy, run, onChat }: FriendRowProps) {
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   if (confirmRemove) {
@@ -112,17 +123,13 @@ function FriendRow({ contact: c, run, onChat }: FriendRowProps) {
     );
   }
 
+  // In a live call, calling a friend rings them into it.
+  const callAction = inCall ? "add" : "call";
+
   return (
     <li className={c.online ? "row" : "row offline"}>
       <span className={c.online ? "dot online" : "dot"} />
-      <button className="row-open" onClick={onChat} title={`${c.name} ile mesajlaş`}>
-        <span className="row-name">{c.name}</span>
-        {c.unread > 0 && (
-          <span className="unread" aria-label={`${c.unread} okunmamış mesaj`}>
-            {c.unread > 99 ? "99+" : c.unread}
-          </span>
-        )}
-      </button>
+      <span className="row-name">{c.name}</span>
       <button
         className="icon-btn reveal"
         title="Arkadaşlıktan çıkar"
@@ -133,13 +140,29 @@ function FriendRow({ contact: c, run, onChat }: FriendRowProps) {
       </button>
       {c.online && c.inCall ? (
         <span className="row-note busy">görüşmede</span>
-      ) : c.online ? (
-        <button className="call-btn" onClick={() => run(api.startCall(c.id))} aria-label={`${c.name} kişisini ara`}>
-          <Icon name="phone" size={14} />
-          Ara
-        </button>
-      ) : (
+      ) : !c.online ? (
         <span className="row-note">çevrimdışı</span>
+      ) : null}
+      <button
+        className="row-btn square"
+        onClick={onChat}
+        title={`${c.name} ile mesajlaş`}
+        aria-label={c.unread > 0 ? `${c.name} ile mesajlaş, ${c.unread} okunmamış` : `${c.name} ile mesajlaş`}
+      >
+        <Icon name="message" size={15} />
+        {c.unread > 0 && <span className="unread">{c.unread > 99 ? "99+" : c.unread}</span>}
+      </button>
+      {c.online && !c.inCall && (
+        <button
+          className="row-btn"
+          onClick={() => run(api.startCall(c.id))}
+          disabled={callBusy}
+          title={callAction === "add" ? `${c.name} kişisini görüşmeye ekle` : `${c.name} kişisini ara`}
+          aria-label={callAction === "add" ? `${c.name} kişisini görüşmeye ekle` : `${c.name} kişisini ara`}
+        >
+          <Icon name={callAction === "add" ? "userPlus" : "phone"} size={14} />
+          {callAction === "add" ? "Ekle" : "Ara"}
+        </button>
       )}
     </li>
   );

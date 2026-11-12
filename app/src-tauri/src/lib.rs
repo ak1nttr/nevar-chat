@@ -1,9 +1,12 @@
 //! Tauri shell: exposes the nevar service to the UI as commands and events.
 
+mod overlay;
+
 use std::str::FromStr;
 
 use nevar_core::{
     EndpointId,
+    hotkeys::Hotkeys,
     service::{AppState, CallStatsView, Event, MessageView, MicTestView, Service},
     store::Settings,
 };
@@ -64,9 +67,41 @@ fn set_name(service: State<Service>, name: String) -> CmdResult {
 // rather than the window thread, which Windows audio (COM) doesn't like.
 
 #[tauri::command]
-async fn set_settings(service: State<'_, Service>, settings: Settings) -> CmdResult {
+async fn set_settings(app: AppHandle, service: State<'_, Service>, settings: Settings) -> CmdResult {
     service.set_settings(settings);
+    apply_shortcuts(&app);
+    overlay::sync(&app);
     Ok(())
+}
+
+/// Stops shortcuts from firing while the user presses keys to pick a new one.
+#[tauri::command]
+fn pause_shortcuts(hotkeys: State<Hotkeys<Shortcut>>, paused: bool) {
+    hotkeys.pause(paused);
+}
+
+/// The overlay page saying whether it has anything to show right now.
+#[tauri::command]
+fn overlay_has_content(app: AppHandle, has: bool) {
+    overlay::set_has_content(&app, has);
+}
+
+/// Whether the overlay window is showing the quick menu (rather than the corner panel).
+#[tauri::command]
+fn overlay_menu_open(app: AppHandle) -> bool {
+    overlay::menu_open(&app)
+}
+
+#[tauri::command]
+fn close_quick_menu(app: AppHandle) {
+    overlay::close_menu(&app);
+}
+
+/// Opens the main window, e.g. from the quick menu.
+#[tauri::command]
+fn open_main(app: AppHandle) {
+    overlay::close_menu(&app);
+    show_main(&app);
 }
 
 #[tauri::command]
@@ -193,6 +228,66 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// What the global shortcuts do.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum Shortcut {
+    QuickMenu,
+    ToggleMute,
+    ToggleDeafen,
+    ToggleOverlay,
+}
+
+/// Told to the UI after a shortcut changed something, so it can click and show it.
+#[derive(Clone, Serialize)]
+struct ShortcutUsed {
+    shortcut: Shortcut,
+    /// The new state: muted, deafened, overlay on.
+    on: bool,
+}
+
+fn on_shortcut(app: &AppHandle, shortcut: Shortcut) {
+    let service = app.state::<Service>();
+    let on = match shortcut {
+        Shortcut::QuickMenu => {
+            overlay::toggle_menu(app);
+            return;
+        }
+        Shortcut::ToggleMute => {
+            let muted = !service.muted();
+            service.set_muted(muted);
+            muted
+        }
+        Shortcut::ToggleDeafen => {
+            let deafened = !service.deafened();
+            service.set_deafened(deafened);
+            deafened
+        }
+        Shortcut::ToggleOverlay => {
+            let mut settings = service.settings();
+            settings.overlay.enabled = !settings.overlay.enabled;
+            let on = settings.overlay.enabled;
+            service.set_settings(settings);
+            overlay::sync(app);
+            on
+        }
+    };
+    let _ = app.emit("shortcut", ShortcutUsed { shortcut, on });
+}
+
+/// Hands the saved shortcuts to the key watcher.
+fn apply_shortcuts(app: &AppHandle) {
+    let s = app.state::<Service>().settings().shortcuts;
+    let bindings = [
+        (Shortcut::QuickMenu, s.quick_menu),
+        (Shortcut::ToggleMute, s.toggle_mute),
+        (Shortcut::ToggleDeafen, s.toggle_deafen),
+        (Shortcut::ToggleOverlay, s.toggle_overlay),
+    ];
+    let bindings = bindings.into_iter().filter_map(|(action, key)| Some((action, key?))).collect();
+    app.state::<Hotkeys<Shortcut>>().set(bindings);
+}
+
 fn forward_event(app: &AppHandle, event: Event) {
     match event {
         Event::StateChanged => {
@@ -255,11 +350,15 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         // Closing the window keeps nevar running in the tray, so friends can still reach you.
         // Quitting is in the tray menu.
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            WindowEvent::Focused(focused) if window.label() == overlay::LABEL => {
+                overlay::on_focus(window.app_handle(), *focused);
+            }
+            _ => {}
         })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -268,6 +367,11 @@ pub fn run() {
                 forward_event(&handle, e)
             }))?;
             app.manage(service);
+            app.manage(overlay::Overlay::default());
+            let handle = app.handle().clone();
+            app.manage(Hotkeys::start(move |shortcut| on_shortcut(&handle, shortcut)));
+            apply_shortcuts(app.handle());
+            overlay::sync(app.handle());
             build_tray(app)?;
             Ok(())
         })
@@ -294,6 +398,11 @@ pub fn run() {
             start_mic_test,
             stop_mic_test,
             get_mic_test,
+            pause_shortcuts,
+            overlay_has_content,
+            overlay_menu_open,
+            close_quick_menu,
+            open_main,
         ])
         .build(tauri::generate_context!())
         .expect("error while building nevar")

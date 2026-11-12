@@ -9,6 +9,7 @@ pub mod call;
 pub mod controls;
 pub mod gate;
 pub mod jitter;
+mod netsim;
 pub mod playout;
 
 use std::{
@@ -144,6 +145,7 @@ pub fn spawn_sender(
             let mut sending = false;
             let mut seq: u32 = 0;
             let mut buf = [0u8; MAX_PACKET];
+            let mut netsim = netsim::NetSim::default();
 
             while let Ok(mut frame) = frames.recv() {
                 processor.update(processing_settings(&controls));
@@ -190,7 +192,7 @@ pub fn spawn_sender(
                     packet.push(flags);
                     packet.extend_from_slice(opus);
                     seq = seq.wrapping_add(1);
-                    destinations.send(packet.into());
+                    netsim.send(&destinations, packet.into(), controls.simulated_network());
                 }
             }
         })?;

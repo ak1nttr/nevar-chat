@@ -1,4 +1,7 @@
-//! Command-line test tool for nevar's networking, used before the desktop app exists.
+//! Command-line test tool for nevar's networking, used before the desktop app exists,
+//! and the test bot for trying the app alone.
+
+mod bot;
 
 use std::{io::Write, path::PathBuf, time::Duration};
 
@@ -50,6 +53,9 @@ enum Command {
     Answer,
     /// Check your mic and speakers (plays no sound).
     Devices,
+    /// Run a test bot: a pretend friend that answers calls and echoes your voice.
+    /// Run more with different --profile values for group calls.
+    Bot,
 }
 
 #[tokio::main]
@@ -61,6 +67,9 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if let Command::Bot = cli.command {
+        return bot::run(&cli.profile).await;
+    }
     let devices = AudioDevices { mic: cli.mic, speakers: cli.speakers };
     let key = identity::load_or_create(&identity_path(&cli.profile)?)?;
 
@@ -78,7 +87,7 @@ async fn main() -> Result<()> {
     println!("your ID: {}", node.id());
 
     match cli.command {
-        Command::Id | Command::Devices => unreachable!(),
+        Command::Id | Command::Devices | Command::Bot => unreachable!(),
         Command::Listen => listen(&node).await?,
         Command::Probe { peer, secs } => run_probe(&node, peer, Duration::from_secs(secs)).await?,
         Command::Call { peer } => {
@@ -171,8 +180,10 @@ async fn talk(conn: Connection, devices: &AudioDevices) -> Result<()> {
     let call = Call::start(devices, controls)?;
     call.add_peer(conn.clone())?;
     println!("in a call with {peer}");
-    println!("  mic:      {}", call.mic.device_name);
-    println!("  speakers: {}", call.speakers.device_name);
+    if let Some((mic, speakers)) = call.device_names() {
+        println!("  mic:      {mic}");
+        println!("  speakers: {speakers}");
+    }
     println!("Ctrl+C to hang up\n");
 
     let mut ticker = tokio::time::interval(Duration::from_millis(500));

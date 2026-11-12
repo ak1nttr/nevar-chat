@@ -15,6 +15,34 @@ export interface Settings {
   echo_cancellation: boolean;
   auto_gain: boolean;
   output_volume: number;
+  shortcuts: Shortcuts;
+  overlay: OverlaySettings;
+}
+
+/** A key combination: a Windows virtual-key code (keyboard or mouse) plus modifiers. */
+export interface Hotkey {
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  key: number;
+}
+
+export type ShortcutName = "quick_menu" | "toggle_mute" | "toggle_deafen" | "toggle_overlay";
+export type Shortcuts = Record<ShortcutName, Hotkey | null>;
+
+export type Corner = "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
+
+export interface OverlaySettings {
+  enabled: boolean;
+  corner: Corner;
+  show_voice: boolean;
+  show_messages: boolean;
+}
+
+/** Sent after a global shortcut changed something. */
+export interface ShortcutUsed {
+  shortcut: "quickMenu" | "toggleMute" | "toggleDeafen" | "toggleOverlay";
+  on: boolean;
 }
 
 export interface Contact {
@@ -132,6 +160,11 @@ export const api = {
   startMicTest: () => invoke<void>("start_mic_test"),
   stopMicTest: () => invoke<void>("stop_mic_test"),
   getMicTest: () => invoke<MicTest | null>("get_mic_test"),
+  pauseShortcuts: (paused: boolean) => invoke<void>("pause_shortcuts", { paused }),
+  overlayHasContent: (has: boolean) => invoke<void>("overlay_has_content", { has }),
+  overlayMenuOpen: () => invoke<boolean>("overlay_menu_open"),
+  closeQuickMenu: () => invoke<void>("close_quick_menu"),
+  openMain: () => invoke<void>("open_main"),
 };
 
 /** Turns backend error text into something to show the user, in Turkish. */

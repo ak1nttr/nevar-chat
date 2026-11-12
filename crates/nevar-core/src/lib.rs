@@ -4,6 +4,7 @@ pub mod identity;
 pub mod node;
 pub mod probe;
 pub mod protocol;
+pub mod hotkeys;
 pub mod ptt;
 pub mod service;
 pub mod store;

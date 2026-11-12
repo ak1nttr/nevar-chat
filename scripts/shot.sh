@@ -13,10 +13,20 @@ EDGE="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 
 mkdir -p "$OUT"
 cd "$(dirname "$0")/../app"
+started=0
 if ! curl -s -o /dev/null http://localhost:1420/; then
   (pnpm dev > /dev/null 2>&1 &)
   until curl -s -o /dev/null http://localhost:1420/; do sleep 0.5; done
+  started=1
 fi
+# A dev server this script started must not outlive it: it holds port 1420, which `pnpm tauri dev` needs.
+stop_server() {
+  [[ $started -eq 1 ]] || return 0
+  local pid
+  pid="$(netstat -ano | awk '/:1420 .*LISTENING/ {print $NF; exit}')"
+  [[ -n "$pid" ]] && taskkill //PID "$pid" //T //F > /dev/null 2>&1
+}
+trap stop_server EXIT
 
 win_out="$(cygpath -w "$OUT")"
 profile="$(cygpath -w "${TMPDIR:-/tmp}")\\nevar-shot-profile"

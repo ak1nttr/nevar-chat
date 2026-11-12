@@ -1,6 +1,7 @@
 pub mod codec;
 pub mod device;
 pub mod processing;
+pub mod virtual_card;
 
 /// Opus runs natively at 48 kHz; everything inside nevar uses this rate, mono.
 pub const SAMPLE_RATE: u32 = 48_000;

@@ -352,7 +352,8 @@ p {
   letter-spacing: 0;
 }
 
-.call-btn {
+.row-btn {
+  position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -367,11 +368,21 @@ p {
   transition: background-color 150ms var(--ease);
 }
 
-.call-btn:hover {
+.row-btn.square {
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+}
+
+.row-btn:disabled {
+  opacity: 0.4;
+}
+
+.row-btn:hover:not(:disabled) {
   background: var(--hover);
 }
 
-.call-btn:active {
+.row-btn:active:not(:disabled) {
   transform: scale(0.98);
 }
 
@@ -485,7 +496,7 @@ p {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px 24px 0;
+  padding: 4px 24px 0;
 }
 
 .live-meta {
@@ -825,6 +836,11 @@ p {
   color: var(--text2);
 }
 
+.live-crumb {
+  align-self: flex-start;
+  margin-bottom: 4px;
+}
+
 .crumb:hover {
   background: var(--hover);
   color: var(--text);
@@ -1045,6 +1061,13 @@ p {
   font-size: 13px;
 }
 
+.key-picker > span.key-picker-actions {
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
 .keycap.listening {
   border-color: var(--text2);
 }
@@ -1064,33 +1087,21 @@ p {
 
 /* ---------- friend rows: open chat, unread, busy ---------- */
 
-.row-open {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  height: 100%;
-  padding: 0;
-  border: none;
-  background: transparent;
-  text-align: left;
-}
-
-.row-open .row-name {
-  flex: 0 1 auto;
-}
-
+/* Unread count, pinned to the corner of the message button. */
 .unread {
-  flex: none;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 2px solid var(--bg);
   border-radius: 10px;
+  box-sizing: content-box;
   background: var(--text);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  line-height: 20px;
+  line-height: 16px;
   text-align: center;
   color: #fff;
 }
@@ -1341,4 +1352,388 @@ p {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* ---------- folded call: a strip under the open page ---------- */
+
+.callbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin: 0 8px 8px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 4px 16px rgba(15, 15, 15, 0.08), 0 1px 2px rgba(15, 15, 15, 0.06);
+}
+
+.callbar-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+}
+
+.callbar-open:hover {
+  background: var(--hover);
+}
+
+.callbar-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sweep);
+}
+
+.callbar-dot.live {
+  background: var(--live);
+}
+
+.callbar-text {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.callbar-names {
+  overflow: hidden;
+  font-family: var(--title);
+  font-size: 15px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.callbar-status {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text2);
+}
+
+.callbar-tool {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  transition: background-color 150ms var(--ease);
+}
+
+.callbar-tool:hover {
+  background: var(--hover);
+}
+
+.callbar-tool.off {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.callbar-tool.hang {
+  background: var(--red);
+  color: #fff;
+}
+
+.callbar-tool.hang:hover {
+  background: #b23a35;
+}
+
+/* ---------- overlay window: corner panel over games, and the quick menu ---------- */
+
+html.overlay-window,
+html.overlay-window body {
+  height: 100%;
+  background: transparent;
+}
+
+html.overlay-window #root {
+  height: 100%;
+}
+
+/* The window is fixed-size; the cards hug the chosen corner and the rest stays clear. */
+.ov-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: 2px;
+}
+
+.ov-panel.topRight,
+.ov-panel.bottomRight {
+  align-items: flex-end;
+}
+
+.ov-panel.topLeft,
+.ov-panel.bottomLeft {
+  align-items: flex-start;
+}
+
+.ov-panel.bottomLeft,
+.ov-panel.bottomRight {
+  flex-direction: column-reverse;
+}
+
+.ov-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  padding: 8px 12px;
+  /* Mostly see-through so the game shows; a soft white halo keeps the text readable on dark scenes. */
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  font-size: 13px;
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.9), 0 0 1px rgba(255, 255, 255, 1);
+  animation: ov-in 180ms var(--ease);
+}
+
+@keyframes ov-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.ov-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.ov-line svg {
+  flex: none;
+  color: var(--red);
+}
+
+.ov-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sweep);
+  transition: background-color 120ms linear;
+}
+
+.ov-dot.live {
+  background: var(--live);
+}
+
+.ov-name {
+  overflow: hidden;
+  font-family: var(--title);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-name.talking {
+  color: var(--live-text);
+}
+
+.ov-hint {
+  font-size: 12px;
+  color: var(--text2);
+}
+
+.ov-message {
+  max-width: 100%;
+}
+
+.ov-message p {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+/* Quick menu: the whole window, one rounded white sheet. */
+.qm {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+}
+
+.qm-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.qm-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.qm-call {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 12px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--soft);
+}
+
+.qm-call-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--title);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.qm-call-names {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qm-call-time {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--text2);
+}
+
+.qm-call-tools {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.qm-call .tool {
+  width: 40px;
+  height: 40px;
+  background: var(--bg);
+}
+
+.qm-call .hang,
+.qm-call .accept,
+.qm-call .decline {
+  height: 40px;
+}
+
+.qm-friends {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.qm-friend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 6px 0 10px;
+  border-radius: 6px;
+}
+
+.qm-friend:hover {
+  background: var(--hover);
+}
+
+.qm-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--title);
+  font-size: 16px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qm-friend.offline .qm-name {
+  color: var(--text2);
+}
+
+.qm-empty {
+  padding: 16px 10px;
+  color: var(--text2);
+}
+
+.qm-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.qm-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.qm-keys {
+  font-size: 12px;
+  color: var(--text2);
+}
+
+.qm-chat {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.qm-error {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--text);
+  font-size: 13px;
+  color: #fff;
 }
