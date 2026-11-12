@@ -74,6 +74,32 @@ async fn set_settings(app: AppHandle, service: State<'_, Service>, settings: Set
     Ok(())
 }
 
+#[derive(Serialize)]
+struct MusicApp {
+    pid: u32,
+    name: String,
+    /// Playing right now.
+    active: bool,
+}
+
+/// Apps making sound, which could be shared into the call.
+#[tauri::command]
+async fn music_apps(service: State<'_, Service>) -> CmdResult<Vec<MusicApp>> {
+    let apps = service.music_apps().map_err(err)?;
+    Ok(apps.into_iter().map(|a| MusicApp { pid: a.pid, name: a.name, active: a.active }).collect())
+}
+
+/// Shares one app's sound with everyone in the call.
+#[tauri::command]
+async fn share_app(service: State<'_, Service>, pid: u32) -> CmdResult {
+    service.share_app(pid).map_err(err)
+}
+
+#[tauri::command]
+fn stop_sharing(service: State<Service>) {
+    service.stop_sharing();
+}
+
 /// Stops shortcuts from firing while the user presses keys to pick a new one.
 #[tauri::command]
 fn pause_shortcuts(hotkeys: State<Hotkeys<Shortcut>>, paused: bool) {
@@ -399,6 +425,9 @@ pub fn run() {
             stop_mic_test,
             get_mic_test,
             pause_shortcuts,
+            music_apps,
+            share_app,
+            stop_sharing,
             overlay_has_content,
             overlay_menu_open,
             close_quick_menu,

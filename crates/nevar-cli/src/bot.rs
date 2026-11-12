@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context, Result};
 use nevar_core::{
     EndpointId,
-    audio::{FRAME_SAMPLES, Frame, SAMPLE_RATE, virtual_card::MicSource},
+    audio::{FRAME_SAMPLES, Frame, SAMPLE_RATE, STEREO_SAMPLES, StereoFrame, virtual_card::MicSource},
     service::{AppState, AudioMode, CallPhase, Event, Notice, Service},
     store::{ContactState, Mode},
 };
@@ -184,7 +184,14 @@ impl Bot {
             }
             "mesaj" => self.message(arg),
             "yanki" => self.set_voice(Voice::Echo),
-            "muzik" | "melodi" | "ton" => self.set_voice(Voice::Tune),
+            "melodi" | "ton" => self.set_voice(Voice::Tune),
+            "muzik" => match fold(arg).as_str() {
+                "dur" | "kapat" | "durdur" => {
+                    self.service.stop_sharing();
+                    println!("♪ Müzik paylaşımı durdu.");
+                }
+                _ => self.share_music(),
+            },
             "sessiz" => self.set_voice(Voice::Silent),
             "kayip" => match arg.trim_end_matches('%').parse::<u32>() {
                 Ok(loss) => self.set_network(Some(loss), None),
@@ -245,6 +252,15 @@ impl Bot {
         }
     }
 
+    /// Shares a stereo tune on the music channel, the way a friend sharing Spotify would.
+    fn share_music(&self) {
+        let mut tune = StereoTune::default();
+        match self.service.share_generated("Test müziği", move || tune.next()) {
+            Ok(()) => println!("♪ Müzik kanalından stereo melodi paylaşıyorum: notalar sırayla sol ve sağdan gelir."),
+            Err(e) => println!("! Paylaşamadım (görüşmede miyiz?): {e:#}"),
+        }
+    }
+
     fn set_voice(&self, voice: Voice) {
         self.voice.store(voice as u8, Ordering::Relaxed);
         println!("♪ {}", voice_hint(voice));
@@ -300,7 +316,7 @@ impl Bot {
 fn voice_hint(voice: Voice) -> String {
     match voice {
         Voice::Echo => format!("Konuş, {ECHO_SECONDS} saniye sonra sesini geri yollarım."),
-        Voice::Tune => "Melodi çalıyorum. Kesinti ya da cızırtı duyarsan ağda sorun var.".into(),
+        Voice::Tune => "Ses kanalından melodi çalıyorum. Kesinti ya da cızırtı duyarsan ağda sorun var.".into(),
         Voice::Silent => "Sessizim.".into(),
     }
 }
@@ -313,7 +329,8 @@ Komutlar:
   kapat             görüşmeden çıkar
   mesaj <metin>     sana mesaj atar
   yankı             sesini {ECHO_SECONDS} sn sonra geri yollar (görüşmede varsayılan)
-  müzik             sürekli bir melodi çalar
+  müzik             müzik kanalından stereo melodi paylaşır (müzik dur: durdurur)
+  melodi            ses kanalından melodi çalar
   sessiz            hiçbir şey yollamaz
   kayıp <yüzde>     sana giden paketlerin bir kısmını düşürür, örn: kayıp 5
   titreme <ms>      paketleri rastgele geciktirir, örn: titreme 80
@@ -340,6 +357,34 @@ fn fold(s: &str) -> String {
         })
         .filter(|c| *c != '\u{307}') // the dot left over from lowercasing "İ"
         .collect()
+}
+
+/// A stereo arpeggio for the music channel: each note alternates left and right, with a soft
+/// bass in the middle, so both stereo and dropouts are easy to hear.
+#[derive(Default)]
+struct StereoTune {
+    t: usize,
+}
+
+impl StereoTune {
+    fn next(&mut self) -> StereoFrame {
+        const NOTES: [f32; 8] = [392.0, 493.88, 587.33, 739.99, 783.99, 739.99, 587.33, 493.88];
+        const NOTE_SAMPLES: usize = SAMPLE_RATE as usize / 5;
+        let mut frame = [0.0; STEREO_SAMPLES];
+        for lr in frame.chunks_exact_mut(2) {
+            let index = self.t / NOTE_SAMPLES;
+            let within = (self.t % NOTE_SAMPLES) as f32 / NOTE_SAMPLES as f32;
+            let envelope = (within * 40.0).min(1.0) * (1.0 - within).powi(2);
+            let time = self.t as f32 / SAMPLE_RATE as f32;
+            let note = 0.22 * envelope * (std::f32::consts::TAU * NOTES[index % NOTES.len()] * time).sin();
+            let bass = 0.08 * (std::f32::consts::TAU * 98.0 * time).sin();
+            let (left, right) = if index.is_multiple_of(2) { (note, 0.25 * note) } else { (0.25 * note, note) };
+            lr[0] = left + bass;
+            lr[1] = right + bass;
+            self.t += 1;
+        }
+        frame
+    }
 }
 
 /// The bot's "mic": what it says depends on the voice picked in the terminal.

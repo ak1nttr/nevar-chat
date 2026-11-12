@@ -3,8 +3,12 @@ import { api, AppState, CallInfo, CallStats, describeError, Person } from "../ap
 import { useCallStats, useElapsed } from "../hooks";
 import { vkLabel } from "../keys";
 import { Icon } from "./Icon";
+import { MusicPicker, MusicStrip, useSharers } from "./Music";
 import { TopBar } from "./Mark";
 import { BARS, displayLevel, TALKING, useHistories, useHistory, useTicker, VoiceLane } from "./VoiceLane";
+
+/** `?scene=music-pick` opens the music picker right away (used by the dev mock). */
+const firstPopover = new URLSearchParams(location.search).get("scene") === "music-pick" ? "music" : null;
 
 /** Everyone talks to everyone directly, so a call stays small. Matches what the mesh handles well. */
 const MAX_PEOPLE = 10;
@@ -24,7 +28,11 @@ export function CallScreen({ state, call, toast, onFold }: Props) {
   const stats = useCallStats(active);
   const elapsed = useElapsed(call.sinceMs);
   const tick = useTicker(!active);
-  const [adding, setAdding] = useState(false);
+  // One popover at a time over the tool island.
+  const [popover, setPopover] = useState<"add" | "music" | null>(firstPopover);
+  const adding = popover === "add";
+  const setAdding = (on: boolean) => setPopover(on ? "add" : null);
+  const sharers = useSharers(stats);
   const run = (p: Promise<unknown>) => p.catch((e) => toast(describeError(e)));
 
   // Esc closes the add-people picker, else folds the call away like going back.
@@ -33,12 +41,12 @@ export function CallScreen({ state, call, toast, onFold }: Props) {
     if (incoming) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (adding) setAdding(false);
+      if (popover) setPopover(null);
       else onFold();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [incoming, adding, onFold]);
+  }, [incoming, popover, onFold]);
 
   // Live levels, 0..1 on the display scale.
   const levels: Record<string, number> = {};
@@ -115,6 +123,8 @@ export function CallScreen({ state, call, toast, onFold }: Props) {
           )}
         </div>
 
+        {active && <MusicStrip state={state} sharers={sharers} toast={toast} />}
+
         <div className={compact ? "lanes compact" : "lanes"}>
           {incoming && call.caller ? (
             <VoiceLane label={call.caller.name} sweepAt={tick} />
@@ -149,6 +159,9 @@ export function CallScreen({ state, call, toast, onFold }: Props) {
       </div>
 
       <div className="island-wrap">
+        {popover === "music" && (
+          <MusicPicker sharing={call.sharing} onClose={() => setPopover(null)} toast={toast} />
+        )}
         {adding && (
           <div className="picker" role="dialog" aria-label="Görüşmeye ekle">
             <div className="picker-head">
@@ -209,6 +222,15 @@ export function CallScreen({ state, call, toast, onFold }: Props) {
                 aria-expanded={adding}
               >
                 <Icon name="userPlus" />
+              </button>
+              <button
+                className={call.sharing ? "tool sharing" : popover === "music" ? "tool on" : "tool"}
+                onClick={() => setPopover(popover === "music" ? null : "music")}
+                title={call.sharing ? `${call.sharing} paylaşılıyor` : "Müzik paylaş"}
+                aria-label="Müzik paylaş"
+                aria-expanded={popover === "music"}
+              >
+                <Icon name="music" />
               </button>
               <span className="island-sep" />
               <button className="hang" onClick={() => run(api.hangUp())}>

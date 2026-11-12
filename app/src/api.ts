@@ -17,6 +17,8 @@ export interface Settings {
   output_volume: number;
   shortcuts: Shortcuts;
   overlay: OverlaySettings;
+  /** How loud music others share plays: 0 to 1. */
+  music_volume: number;
 }
 
 /** A key combination: a Windows virtual-key code (keyboard or mouse) plus modifiers. */
@@ -86,6 +88,16 @@ export interface CallInfo {
   /** People we rang into the call who haven't answered yet. */
   ringing: Person[];
   sinceMs: number | null;
+  /** The app whose sound we share into the call. */
+  sharing: string | null;
+}
+
+/** An app making sound, which can be shared into a call. */
+export interface MusicApp {
+  pid: number;
+  name: string;
+  /** Playing right now. */
+  active: boolean;
 }
 
 export interface AppState {
@@ -118,6 +130,8 @@ export interface PeerStats {
   recovered: number;
   /** Their voice as last played. */
   level: number;
+  /** Music they share, as last played; 0 when they aren't sharing. */
+  musicLevel: number;
 }
 
 export interface Devices {
@@ -160,6 +174,9 @@ export const api = {
   startMicTest: () => invoke<void>("start_mic_test"),
   stopMicTest: () => invoke<void>("stop_mic_test"),
   getMicTest: () => invoke<MicTest | null>("get_mic_test"),
+  musicApps: () => invoke<MusicApp[]>("music_apps"),
+  shareApp: (pid: number) => invoke<void>("share_app", { pid }),
+  stopSharing: () => invoke<void>("stop_sharing"),
   pauseShortcuts: (paused: boolean) => invoke<void>("pause_shortcuts", { paused }),
   overlayHasContent: (has: boolean) => invoke<void>("overlay_has_content", { has }),
   overlayMenuOpen: () => invoke<boolean>("overlay_menu_open"),
@@ -184,6 +201,10 @@ export function describeError(e: unknown): string {
     ["nobody is calling", "Seni arayan kimse yok."],
     ["name can't be empty", "İsim boş olamaz."],
     ["connection lost", "Bağlantı koptu."],
+    ["music can only be shared during a call", "Müzik sadece görüşme sırasında paylaşılabilir."],
+    ["isn't making sound anymore", "O uygulama artık ses çıkarmıyor."],
+    ["can't capture an app's sound", "Bu Windows sürümü uygulama sesini paylaşamıyor (Windows 10 2004 ve sonrası gerekir)."],
+    ["refused to capture", "Windows bu uygulamanın sesini vermedi."],
     ["mic or speakers", "Mikrofon veya hoparlör açılamadı. Ayarlar'dan başka bir cihaz seç."],
   ];
   return known.find(([needle]) => text.includes(needle))?.[1] ?? text;

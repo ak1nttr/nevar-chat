@@ -1,9 +1,9 @@
-//! The official libopus, fixed to 48 kHz mono, 20 ms frames.
+//! The official libopus, at 48 kHz in 20 ms frames: mono for voice, stereo for music.
 
 use anyhow::{Result, bail};
 use opus::{Application, Bitrate, Channels, Signal};
 
-use super::{FRAME_SAMPLES, Frame, SAMPLE_RATE};
+use super::{FRAME_SAMPLES, Frame, SAMPLE_RATE, STEREO_SAMPLES, StereoFrame};
 
 /// Large enough for any single 20 ms frame at our bitrate.
 pub const MAX_PACKET: usize = 1275;
@@ -64,6 +64,53 @@ impl Decoder {
     }
 }
 
+/// Shared music: near-transparent stereo. Music doesn't go through voice clean-up, and
+/// gets no error-correction data (Opus only adds it in its speech mode); loss concealment
+/// covers a lost frame.
+const MUSIC_BITRATE: i32 = 128_000;
+
+pub struct MusicEncoder(opus::Encoder);
+
+impl MusicEncoder {
+    pub fn new() -> Result<Self> {
+        let mut enc = opus::Encoder::new(SAMPLE_RATE, Channels::Stereo, Application::Audio)?;
+        enc.set_bitrate(Bitrate::Bits(MUSIC_BITRATE))?;
+        enc.set_signal(Signal::Music)?;
+        Ok(Self(enc))
+    }
+
+    pub fn encode(&mut self, pcm: &StereoFrame, out: &mut [u8]) -> Result<usize> {
+        Ok(self.0.encode_float(pcm, out)?)
+    }
+}
+
+pub struct MusicDecoder(opus::Decoder);
+
+impl MusicDecoder {
+    pub fn new() -> Result<Self> {
+        Ok(Self(opus::Decoder::new(SAMPLE_RATE, Channels::Stereo)?))
+    }
+
+    pub fn decode(&mut self, packet: &[u8], out: &mut StereoFrame) -> Result<()> {
+        self.decode_raw(packet, out)
+    }
+
+    /// Fills in for a frame that never came. Repeated calls fade out.
+    pub fn conceal(&mut self, out: &mut StereoFrame) -> Result<()> {
+        self.decode_raw(&[], out)
+    }
+
+    fn decode_raw(&mut self, packet: &[u8], out: &mut StereoFrame) -> Result<()> {
+        // Per channel.
+        let n = self.0.decode_float(packet, out, false)?;
+        if n * 2 > STEREO_SAMPLES {
+            bail!("decoded {n} stereo samples into a {FRAME_SAMPLES}-sample frame");
+        }
+        out[n * 2..].fill(0.0);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +150,28 @@ mod tests {
         dec.recover(&packets[11], &mut out).unwrap();
         let ratio = rms(&out) / rms(&tone(10));
         assert!((0.5..1.3).contains(&ratio), "recovered level off: {ratio}");
+    }
+
+    #[test]
+    fn music_keeps_left_and_right_apart() {
+        let mut enc = MusicEncoder::new().unwrap();
+        let mut dec = MusicDecoder::new().unwrap();
+        let mut packet = [0u8; MAX_PACKET];
+        let mut out = [0f32; STEREO_SAMPLES];
+        // Left: the tone. Right: silence.
+        for i in 0..20 {
+            let mut frame = [0f32; STEREO_SAMPLES];
+            for (lr, s) in frame.chunks_exact_mut(2).zip(tone(i)) {
+                lr[0] = s;
+            }
+            let len = enc.encode(&frame, &mut packet).unwrap();
+            assert!(len > 100, "music should get plenty of bits: {len}");
+            dec.decode(&packet[..len], &mut out).unwrap();
+        }
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        let right: Vec<f32> = out.iter().skip(1).step_by(2).copied().collect();
+        assert!(rms(&left) > 0.25, "left lost its tone: {}", rms(&left));
+        assert!(rms(&right) < 0.05 * rms(&left), "tone leaked into the right: {}", rms(&right));
     }
 
     #[test]

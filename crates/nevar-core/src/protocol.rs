@@ -7,8 +7,12 @@ pub const PROBE_REPLY: u8 = 1;
 /// One 20 ms Opus voice frame: `[type][seq u32][flags u8][opus bytes]`.
 pub const VOICE: u8 = 2;
 
+/// One 20 ms Opus stereo frame of shared music, laid out like [`VOICE`].
+pub const MUSIC: u8 = 3;
+
+/// Header length of [`VOICE`] and [`MUSIC`] datagrams.
 pub const VOICE_HEADER: usize = 6;
 
 /// Last frame before the sender went quiet on purpose (voice activation, push-to-talk
-/// release, mute). Lets the receiver tell deliberate silence from a late network.
+/// release, mute; for music, sharing stopped). Lets the receiver tell deliberate silence from a late network.
 pub const FLAG_END_OF_SPEECH: u8 = 1;

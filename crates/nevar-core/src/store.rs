@@ -69,6 +69,8 @@ pub struct Settings {
     pub output_volume: f32,
     pub shortcuts: Shortcuts,
     pub overlay: OverlaySettings,
+    /// How loud music others share plays for us: 0 to 1.
+    pub music_volume: f32,
 }
 
 impl Default for Settings {
@@ -84,6 +86,7 @@ impl Default for Settings {
             output_volume: 1.0,
             shortcuts: Shortcuts::default(),
             overlay: OverlaySettings::default(),
+            music_volume: crate::voice::controls::DEFAULT_MUSIC_VOLUME,
         }
     }
 }

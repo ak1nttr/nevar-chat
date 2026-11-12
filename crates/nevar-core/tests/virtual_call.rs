@@ -7,7 +7,7 @@ use std::{path::PathBuf, time::Duration};
 
 use nevar_core::{
     EndpointId,
-    audio::{FRAME_SAMPLES, Frame, SAMPLE_RATE, virtual_card::MicSource},
+    audio::{FRAME_SAMPLES, Frame, SAMPLE_RATE, STEREO_SAMPLES, virtual_card::MicSource},
     service::{AppState, AudioMode, CallPhase, Service},
     store::{ContactState, Mode},
 };
@@ -91,6 +91,31 @@ async fn a_tone_goes_to_the_bot_and_comes_back() {
         heard = heard.max(me.call_stats().and_then(|s| s.peers.first().map(|p| p.level)).unwrap_or(0.0));
     }
     assert!(heard > 0.1, "the tone didn't come back, level {heard}");
+
+    // Music I share reaches the bot on its own channel, and stops when I stop.
+    let mut t = 0usize;
+    me.share_generated("Test", move || {
+        let mut frame = [0.0; STEREO_SAMPLES];
+        for lr in frame.chunks_exact_mut(2) {
+            let s = 0.3 * (2.0 * std::f32::consts::PI * 330.0 * t as f32 / SAMPLE_RATE as f32).sin();
+            lr.copy_from_slice(&[s, -s]);
+            t += 1;
+        }
+        frame
+    })
+    .unwrap();
+    assert_eq!(me.state().call.unwrap().sharing.as_deref(), Some("Test"));
+    let bot_music = || bot.call_stats().and_then(|s| s.peers.first().map(|p| p.music_level)).unwrap_or(0.0);
+    let mut loudest = 0.0f32;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        loudest = loudest.max(bot_music());
+    }
+    assert!(loudest > 0.1, "the bot didn't hear the shared music: {loudest}");
+    me.stop_sharing();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(bot_music(), 0.0, "music kept playing after sharing stopped");
+    assert_eq!(me.state().call.unwrap().sharing, None);
 
     // The bot's pretend bad network loses packets on their way to me.
     bot.controls().set_simulated_network(30, 0);

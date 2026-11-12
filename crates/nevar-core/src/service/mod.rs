@@ -39,7 +39,11 @@ use crate::{
     node::Route,
     ptt,
     store::{Contact, ContactState, Settings, Store, Stored},
-    audio::virtual_card::MicSource,
+    audio::{
+        StereoFrame,
+        app_capture::{self, AppCapture, AudioApp},
+        virtual_card::MicSource,
+    },
     voice::{AudioDevices, Call, Controls},
 };
 use control::{CallId, Control, Member, Relation};
@@ -158,6 +162,8 @@ pub struct CallView {
     pub ringing: Vec<PersonView>,
     /// Unix milliseconds when the first person joined (active calls only).
     pub since_ms: Option<u64>,
+    /// The app whose sound we share into the call, if any.
+    pub sharing: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -198,6 +204,8 @@ pub struct PeerStatsView {
     pub recovered: u64,
     /// Their voice as we last played it.
     pub level: f32,
+    /// Music they share, as last played; zero when they aren't sharing (or it's quiet).
+    pub music_level: f32,
 }
 
 /// Someone ringing us into their call.
@@ -221,6 +229,29 @@ struct GroupCall {
     connecting: HashSet<EndpointId>,
     /// When the first person joined.
     since: Option<SystemTime>,
+    /// Music we're sharing into the call.
+    music: Option<Sharing>,
+}
+
+/// Music we share. Dropping it stops the sharing.
+struct Sharing {
+    /// What it's from, e.g. "Spotify".
+    name: String,
+    _source: SharingSource,
+}
+
+enum SharingSource {
+    App(#[allow(dead_code, reason = "kept for its Drop")] AppCapture),
+    Generated(#[allow(dead_code, reason = "kept for its Drop")] Generator),
+}
+
+/// Calls a function for each 20 ms of music, in real time, until dropped. For the test bot.
+struct Generator(Arc<AtomicBool>);
+
+impl Drop for Generator {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 impl GroupCall {
@@ -232,6 +263,7 @@ impl GroupCall {
             ringing: HashMap::new(),
             connecting: HashSet::new(),
             since: None,
+            music: None,
         }
     }
 
@@ -483,6 +515,7 @@ impl Service {
                         .collect(),
                     ringing: Vec::new(),
                     since_ms: None,
+                    sharing: None,
                 }),
                 CallSlot::InCall(g) => {
                     let mut ringing: Vec<_> = g.ringing.iter().collect();
@@ -493,6 +526,7 @@ impl Service {
                         members: g.members.iter().map(person).collect(),
                         ringing: ringing.into_iter().map(|(id, _)| person(id)).collect(),
                         since_ms: g.since.map(unix_ms),
+                        sharing: g.music.as_ref().map(|m| m.name.clone()),
                     })
                 }
             }
@@ -534,6 +568,7 @@ impl Service {
                 lost: p.jitter.lost,
                 recovered: p.jitter.recovered,
                 level: p.level,
+                music_level: p.music_level,
             })
             .collect();
         let route = if s.peers.iter().any(|p| p.route == Route::Relayed) {
@@ -649,6 +684,68 @@ impl Service {
         self.changed();
     }
 
+    // ----- music sharing -----
+
+    /// Apps making sound that could be shared.
+    pub fn music_apps(&self) -> Result<Vec<AudioApp>> {
+        app_capture::list_apps()
+    }
+
+    /// Shares the sound of the app with process `pid` with everyone in the call,
+    /// replacing anything shared before.
+    pub fn share_app(&self, pid: u32) -> Result<()> {
+        let app = app_capture::list_apps()?
+            .into_iter()
+            .find(|a| a.pid == pid)
+            .context("that app isn't making sound anymore")?;
+        let feed = self.music_feed()?;
+        let capture = AppCapture::start(&app, feed)?;
+        self.set_sharing(Sharing { name: app.name, _source: SharingSource::App(capture) })
+    }
+
+    /// Shares music made by `next`, called for every 20 ms of it. For the test bot.
+    pub fn share_generated(&self, name: &str, mut next: impl FnMut() -> StereoFrame + Send + 'static) -> Result<()> {
+        let feed = self.music_feed()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        std::thread::Builder::new().name("music-generator".into()).spawn(move || {
+            let tick = Duration::from_millis(20);
+            let mut due = Instant::now();
+            while !stopped.load(Ordering::Relaxed) && feed.send(next()).is_ok() {
+                due += tick;
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
+        })?;
+        self.set_sharing(Sharing { name: name.to_string(), _source: SharingSource::Generated(Generator(stop)) })
+    }
+
+    pub fn stop_sharing(&self) {
+        let stopped = match &mut *self.0.call.lock().unwrap() {
+            CallSlot::InCall(g) => g.music.take(),
+            _ => None,
+        };
+        if stopped.is_some() {
+            self.changed();
+        }
+    }
+
+    /// Where to send music for the call we're talking in.
+    fn music_feed(&self) -> Result<crate::voice::MusicFeed> {
+        match &*self.0.call.lock().unwrap() {
+            CallSlot::InCall(GroupCall { audio: Some(audio), .. }) => audio.share_music(),
+            _ => bail!("music can only be shared during a call"),
+        }
+    }
+
+    fn set_sharing(&self, sharing: Sharing) -> Result<()> {
+        match &mut *self.0.call.lock().unwrap() {
+            CallSlot::InCall(g) if g.audio.is_some() => g.music = Some(sharing),
+            _ => bail!("music can only be shared during a call"),
+        }
+        self.changed();
+        Ok(())
+    }
+
     pub fn muted(&self) -> bool {
         self.0.controls.muted()
     }
@@ -668,6 +765,7 @@ impl Service {
         c.set_echo_cancellation(s.echo_cancellation);
         c.set_auto_gain(s.auto_gain);
         c.set_output_volume(s.output_volume);
+        c.set_music_volume(s.music_volume);
         self.0.ptt.set_key(s.push_to_talk_key);
     }
 

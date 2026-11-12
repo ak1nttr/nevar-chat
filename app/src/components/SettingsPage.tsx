@@ -117,6 +117,18 @@ export function SettingsPage({ state, onClose, toast }: Props) {
               onChange={(e) => update({ output_volume: Number(e.target.value) })}
             />
           </Field>
+          <Field label="Paylaşılan müzik" value={`%${Math.round(settings.music_volume * 100)}`}>
+            <input
+              className="slider"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.music_volume}
+              style={{ "--fill": `${settings.music_volume * 100}%` } as React.CSSProperties}
+              onChange={(e) => update({ music_volume: Number(e.target.value) })}
+            />
+          </Field>
           <MicTest inCall={state.call != null} toast={toast} />
         </Group>
 

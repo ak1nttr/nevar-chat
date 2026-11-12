@@ -266,6 +266,15 @@ function CallCard({ state, run }: { state: AppState; run: (p: Promise<unknown>) 
         <span className="qm-call-names">{names}</span>
         <span className="qm-call-time">{active ? formatDuration(elapsed) : "Çalıyor…"}</span>
       </p>
+      {call.sharing && (
+        <p className="qm-sharing">
+          <Icon name="music" size={14} />
+          <span>{call.sharing} paylaşılıyor</span>
+          <button className="link" onClick={() => run(api.stopSharing())}>
+            Durdur
+          </button>
+        </p>
+      )}
       <div className="qm-call-tools">
         {active && (
           <>

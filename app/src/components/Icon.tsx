@@ -17,6 +17,9 @@ const paths = {
   minimize: "M6 12h12",
   send: "M4 12h15 M13 6l6 6-6 6",
   message: "M4 5h16v11H9l-5 4Z",
+  volume: "M4 9v6h4l5 4V5L8 9Z M16 9a4 4 0 0 1 0 6 M18.5 6.5a7.5 7.5 0 0 1 0 11",
+  volumeOff: "M4 9v6h4l5 4V5L8 9Z M17 9l5 6 M22 9l-5 6",
+  music: "M9 18V5l11-2v13 M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z M20 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
   userPlus: "M3 20c0-3 2.7-5 6-5s6 2 6 5 M9 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7 M19 8v6 M16 11h6",
 } as const;
 

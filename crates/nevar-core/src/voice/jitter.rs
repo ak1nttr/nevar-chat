@@ -13,6 +13,7 @@ use bytes::Bytes;
 /// Frames buffered before playback starts, at 20 ms each.
 const INITIAL_TARGET: usize = 2;
 const MIN_TARGET: usize = 1;
+const MUSIC_MIN_TARGET: usize = 3;
 const MAX_TARGET: usize = 10;
 /// Extra frames tolerated above target before we skip one to cut delay.
 const DRIFT_SLACK: usize = 2;
@@ -66,6 +67,8 @@ pub struct JitterBuffer {
     /// The last packet played closed a talk spurt, so silence after it is expected.
     spurt_ended: bool,
     target: usize,
+    /// The reserve never shrinks below this.
+    min_target: usize,
     starved: u32,
     calm: u32,
     stats: JitterStats,
@@ -79,6 +82,7 @@ impl Default for JitterBuffer {
             playing: false,
             spurt_ended: false,
             target: INITIAL_TARGET,
+            min_target: MIN_TARGET,
             starved: 0,
             calm: 0,
             stats: JitterStats::default(),
@@ -87,6 +91,12 @@ impl Default for JitterBuffer {
 }
 
 impl JitterBuffer {
+    /// For shared music: a gap in a song is far more noticeable than in speech, and a bit more
+    /// delay doesn't matter for music, so it keeps a deeper reserve (60 ms at least).
+    pub fn for_music() -> Self {
+        Self { target: MUSIC_MIN_TARGET + 1, min_target: MUSIC_MIN_TARGET, ..Self::default() }
+    }
+
     pub fn push(&mut self, seq: u32, packet: Bytes, end_of_speech: bool) {
         if self.playing {
             let ahead = seq.wrapping_sub(self.next);
@@ -171,7 +181,7 @@ impl JitterBuffer {
         self.calm += 1;
         if self.calm >= RELAX_AFTER {
             self.calm = 0;
-            self.target = (self.target - 1).max(MIN_TARGET);
+            self.target = (self.target - 1).max(self.min_target);
         }
         next
     }

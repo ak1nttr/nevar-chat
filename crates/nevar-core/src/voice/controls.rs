@@ -3,6 +3,9 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 
+/// Shared music plays a bit under the voices unless turned up.
+pub const DEFAULT_MUSIC_VOLUME: f32 = 0.6;
+
 /// When the mic is transmitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -31,6 +34,8 @@ pub struct Controls {
     /// dropped, and up to how many ms each packet is held back.
     sim_loss_percent: AtomicU32,
     sim_jitter_ms: AtomicU32,
+    /// How loud music others share plays for us, as `f32` bits.
+    music_volume: AtomicU32,
 }
 
 impl Default for Controls {
@@ -46,6 +51,7 @@ impl Default for Controls {
             output_volume: AtomicU32::new(1.0f32.to_bits()),
             sim_loss_percent: AtomicU32::new(0),
             sim_jitter_ms: AtomicU32::new(0),
+            music_volume: AtomicU32::new(DEFAULT_MUSIC_VOLUME.to_bits()),
         }
     }
 }
@@ -111,6 +117,14 @@ impl Controls {
     }
     pub fn set_output_volume(&self, volume: f32) {
         self.output_volume.store(volume.clamp(0.0, 2.0).to_bits(), Relaxed);
+    }
+
+    /// Music sits under the voices by default: 0 silent, 1 as shared.
+    pub fn music_volume(&self) -> f32 {
+        f32::from_bits(self.music_volume.load(Relaxed))
+    }
+    pub fn set_music_volume(&self, volume: f32) {
+        self.music_volume.store(volume.clamp(0.0, 1.0).to_bits(), Relaxed);
     }
 
     /// Simulated network trouble for outgoing voice: (percent lost, max extra delay in ms).

@@ -1,6 +1,7 @@
 // The conversation strip: one lane per person, the last few seconds of their voice as bars.
 
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "./Icon";
 
 export const BARS = 44;
 /** Above this (on the 0..1 display scale) someone counts as talking. */
@@ -93,17 +94,30 @@ export function VoiceLane({ label, note, noteTone, levels, sweepAt = 0, compact,
       });
 
   return (
-    <div className={compact ? "lane compact" : "lane"}>
+    <div
+      className={compact ? "lane compact" : "lane"}
+      // Right-clicking someone's lane opens their volume, like in other voice apps.
+      onContextMenu={
+        onVolume
+          ? (e) => {
+              e.preventDefault();
+              setAdjusting(true);
+            }
+          : undefined
+      }
+    >
       <div className="lane-head">
         {onVolume ? (
           <button
-            className="lane-name"
+            className={adjusting ? "lane-name open" : "lane-name"}
             onClick={() => setAdjusting(!adjusting)}
             aria-expanded={adjusting}
-            title={`${label} ses seviyesi`}
+            title={`${label} ses seviyesi (sağ tık da açar)`}
           >
             {label}
-            {percent !== 100 && <span className="lane-volume">%{percent}</span>}
+            <span className={percent !== 100 ? "lane-volume changed" : "lane-volume"}>
+              <Icon name={volume === 0 ? "volumeOff" : "volume"} size={12} />%{percent}
+            </span>
           </button>
         ) : (
           <span>{label}</span>

@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Result;
 
-use super::{FRAME_SAMPLES, Frame, SAMPLE_RATE};
+use super::{FRAME_SAMPLES, Frame, SAMPLE_RATE, STEREO_SAMPLES, StereoFrame, downmix};
 use crate::voice::Playout;
 
 /// 20 ms, the length of a frame.
@@ -29,12 +29,12 @@ impl VirtualCard {
     pub fn start(mut playout: Playout, mic: SyncSender<Frame>, mut source: Box<dyn MicSource>) -> Result<Self> {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         std::thread::Builder::new().name("virtual-card".into()).spawn(move || {
-            let mut played: Frame = [0.0; FRAME_SAMPLES];
+            let mut played: StereoFrame = [0.0; STEREO_SAMPLES];
             let mut next = Instant::now();
             loop {
                 playout.fill(&mut played);
                 // A full queue means the sender is behind; drop like a real mic would.
-                let _ = mic.try_send(source.next(&played));
+                let _ = mic.try_send(source.next(&downmix(&played)));
                 next += TICK;
                 match stop_rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                     Err(RecvTimeoutError::Timeout) => {}

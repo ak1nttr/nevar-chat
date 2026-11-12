@@ -1,3 +1,4 @@
+pub mod app_capture;
 pub mod codec;
 pub mod device;
 pub mod processing;
@@ -9,6 +10,19 @@ pub const SAMPLE_RATE: u32 = 48_000;
 pub const FRAME_SAMPLES: usize = 960;
 
 pub type Frame = [f32; FRAME_SAMPLES];
+
+/// 20 ms of stereo, interleaved left/right: shared music, and what the speakers play.
+pub const STEREO_SAMPLES: usize = FRAME_SAMPLES * 2;
+pub type StereoFrame = [f32; STEREO_SAMPLES];
+
+/// Left and right averaged, e.g. for the echo canceller, which works in mono.
+pub fn downmix(stereo: &StereoFrame) -> Frame {
+    let mut mono = [0.0; FRAME_SAMPLES];
+    for (m, lr) in mono.iter_mut().zip(stereo.chunks_exact(2)) {
+        *m = 0.5 * (lr[0] + lr[1]);
+    }
+    mono
+}
 
 /// Root-mean-square level of a block of samples (0.0 = silence, ~0.7 = full-scale sine).
 pub fn rms(samples: &[f32]) -> f32 {

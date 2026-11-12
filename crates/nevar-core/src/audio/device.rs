@@ -379,19 +379,25 @@ fn open_playback(
     };
 
     let channels = channels as usize;
-    let mut mono = vec![0.0f32; SAMPLE_RATE as usize];
+    let mut stereo = vec![0.0f32; SAMPLE_RATE as usize * 2];
     let stream = device.build_output_stream(
         config,
         move |data: &mut [f32], _| {
             let frames = data.len() / channels;
             // Callbacks are a few ms; the buffer is sized for a full second.
-            let mono = &mut mono[..frames.min(SAMPLE_RATE as usize)];
+            let stereo = &mut stereo[..frames.min(SAMPLE_RATE as usize) * 2];
             match playout.try_lock() {
-                Ok(mut playout) => playout.fill(mono),
-                Err(_) => mono.fill(0.0),
+                Ok(mut playout) => playout.fill(stereo),
+                Err(_) => stereo.fill(0.0),
             }
-            for (out, &s) in data.chunks_exact_mut(channels).zip(mono.iter()) {
-                out.fill(s);
+            for (out, lr) in data.chunks_exact_mut(channels).zip(stereo.chunks_exact(2)) {
+                if channels == 1 {
+                    out[0] = 0.5 * (lr[0] + lr[1]);
+                } else {
+                    // Front left and right; any further speakers stay quiet.
+                    out[..2].copy_from_slice(lr);
+                    out[2..].fill(0.0);
+                }
             }
         },
         on_stream_error("speaker", lost),

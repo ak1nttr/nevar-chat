@@ -1233,13 +1233,25 @@ p {
   color: var(--text2);
 }
 
-.lane-name:hover {
+.lane-name:hover,
+.lane-name.open {
   background: var(--hover);
   color: var(--text);
 }
 
+/* Always shown, quietly, so it's clear the volume can be changed. */
 .lane-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
+  color: var(--sweep);
+}
+
+.lane-name:hover .lane-volume,
+.lane-name.open .lane-volume,
+.lane-volume.changed {
   color: var(--text);
 }
 
@@ -1736,4 +1748,100 @@ html.overlay-window #root {
   background: var(--text);
   font-size: 13px;
   color: #fff;
+}
+
+/* ---------- music sharing ---------- */
+
+.tool.sharing {
+  background: #fdf0e1;
+  color: var(--live-text);
+}
+
+.music-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--soft);
+  font-size: 13px;
+}
+
+.music-strip > svg {
+  flex: none;
+  color: var(--live);
+}
+
+.music-what {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.music-what span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-volume {
+  flex: none;
+  width: 64px;
+}
+
+.music-strip .btn {
+  flex: none;
+  height: 28px;
+}
+
+.picker .dot.live {
+  background: var(--live);
+}
+
+.picker-row:disabled {
+  opacity: 0.5;
+}
+
+.picker-stop {
+  width: calc(100% - 8px);
+  margin: 4px;
+  padding: 8px;
+  border: none;
+  border-radius: 6px;
+  background: var(--red-soft);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--red);
+}
+
+.picker-note {
+  padding: 6px 12px 10px;
+  font-size: 12px;
+  color: var(--text2);
+}
+
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.qm-sharing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.qm-sharing svg {
+  color: var(--live);
+}
+
+.qm-sharing span {
+  flex: 1;
 }

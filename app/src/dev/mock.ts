@@ -1,6 +1,6 @@
 // Dev-only fake backend, so the UI can be designed in a plain browser.
 // Loaded only by `pnpm dev` outside Tauri. Pick a scene with
-// `?scene=home|chat|call|call-home|overlay|menu|group|incoming|incoming-group|ringing|settings|empty|update`.
+// `?scene=home|chat|call|music|call-home|overlay|menu|group|incoming|incoming-group|ringing|settings|empty|update`.
 
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { AppState, CallStats, Devices, Message } from "../api";
@@ -52,9 +52,11 @@ const messages: Message[] = [
 let micTestOn = false;
 
 function callFor(scene: string): AppState["call"] {
-  const call = { caller: null, members: [], ringing: [], sinceMs: null };
+  const call = { caller: null, members: [], ringing: [], sinceMs: null, sharing: scene === "music" ? "Spotify" : null };
   switch (scene) {
     case "call":
+    case "music":
+    case "music-pick":
     case "call-home":
     case "overlay":
     case "menu":
@@ -98,6 +100,7 @@ const state: AppState = {
       toggle_overlay: { ctrl: true, shift: true, alt: false, key: 0x4f },
     },
     overlay: { enabled: overlayScene, corner: "topLeft", show_voice: true, show_messages: true },
+    music_volume: 0.6,
   },
   muted: false,
   deafened: false,
@@ -119,6 +122,7 @@ function stats(): CallStats {
     // The one who isn't our friend reaches us through a relay.
     route: (m.id === guest.id ? "relayed" : "direct") as "relayed" | "direct",
     pingMs: m.id === guest.id ? 48 : 6,
+    musicLevel: scene === "music" && i === 0 ? 0.08 : 0,
     bufferMs: 20,
     lost: 0,
     recovered: 0,
@@ -167,6 +171,12 @@ mockIPC(
       case "set_muted":
         state.muted = (args as { muted: boolean }).muted;
         return;
+      case "music_apps":
+        return [
+          { pid: 1, name: "Spotify", active: true },
+          { pid: 2, name: "Google Chrome", active: false },
+          { pid: 3, name: "Steam", active: false },
+        ];
       case "overlay_menu_open":
         return scene === "menu";
       case "set_deafened":
