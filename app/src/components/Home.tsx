@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { api, AppState, Contact, describeError } from "../api";
+import { Ambient } from "./Ambient";
+import { Loader, Rolling } from "./Bits";
 import { Icon } from "./Icon";
 import { TopBar } from "./Mark";
+import { Quiet } from "./Quiet";
 
 interface Props {
   state: AppState;
@@ -23,6 +26,7 @@ export function Home({ state, onSettings, onChat, toast }: Props) {
 
   return (
     <main className="screen home">
+      <Ambient sharks={state.settings.ambient_motion} />
       <TopBar>
         <button className="icon-btn" onClick={onSettings} title="Ayarlar" aria-label="Ayarlar">
           <Icon name="settings" size={16} />
@@ -31,15 +35,24 @@ export function Home({ state, onSettings, onChat, toast }: Props) {
 
       <div className="home-body">
         <header className="page-head">
-          <h1 className="title">Arkadaşlar</h1>
-          <p className="status-line">
-            <span className={me.online ? "dot online" : "dot"} />
-            {me.online ? `Bağlı · ${online.length} kişi çevrimiçi` : "Bağlanıyor…"}
+          <p className="kicker">
+            {me.online ? (
+              <>
+                <span className="dot on" />
+                bağlı · <Rolling className="num" text={String(online.length)} /> çevrimiçi
+              </>
+            ) : (
+              <>
+                <Loader />
+                bağlanıyor
+              </>
+            )}
           </p>
+          <h1 className="title">Arkadaşlar</h1>
         </header>
 
         {incoming.map((c) => (
-          <div className="callout" key={c.id}>
+          <div className="callout glass" key={c.id}>
             <p>
               <strong>{c.name}</strong> seni arkadaş olarak eklemek istiyor.
             </p>
@@ -54,12 +67,12 @@ export function Home({ state, onSettings, onChat, toast }: Props) {
           </div>
         ))}
 
+        {me.online && friends.length > 0 && online.length === 0 && <Quiet>Şu an kimse çevrimiçi değil.</Quiet>}
+
         {friends.length + outgoing.length === 0 ? (
-          <p className="empty">
-            Henüz arkadaşın yok. Aşağıdaki kodunu bir arkadaşına gönder, onun kodunu da “Arkadaş ekle”ye yapıştır.
-          </p>
+          <Quiet>Henüz arkadaşın yok. Aşağıdaki kodunu bir arkadaşına gönder, onun kodunu da buraya yapıştır.</Quiet>
         ) : (
-          <ul className="friends">
+          <ul className="friends glass">
             {[...online, ...offline].map((c) => (
               <FriendRow
                 key={c.id}
@@ -128,7 +141,7 @@ function FriendRow({ contact: c, inCall, callBusy, run, onChat }: FriendRowProps
 
   return (
     <li className={c.online ? "row" : "row offline"}>
-      <span className={c.online ? "dot online" : "dot"} />
+      <span className={c.online ? "dot on" : "dot"} />
       <span className="row-name">{c.name}</span>
       <button
         className="icon-btn reveal"
@@ -143,15 +156,6 @@ function FriendRow({ contact: c, inCall, callBusy, run, onChat }: FriendRowProps
       ) : !c.online ? (
         <span className="row-note">çevrimdışı</span>
       ) : null}
-      <button
-        className="row-btn square"
-        onClick={onChat}
-        title={`${c.name} ile mesajlaş`}
-        aria-label={c.unread > 0 ? `${c.name} ile mesajlaş, ${c.unread} okunmamış` : `${c.name} ile mesajlaş`}
-      >
-        <Icon name="message" size={15} />
-        {c.unread > 0 && <span className="unread">{c.unread > 99 ? "99+" : c.unread}</span>}
-      </button>
       {c.online && !c.inCall && (
         <button
           className="row-btn"
@@ -160,16 +164,24 @@ function FriendRow({ contact: c, inCall, callBusy, run, onChat }: FriendRowProps
           title={callAction === "add" ? `${c.name} kişisini görüşmeye ekle` : `${c.name} kişisini ara`}
           aria-label={callAction === "add" ? `${c.name} kişisini görüşmeye ekle` : `${c.name} kişisini ara`}
         >
-          <Icon name={callAction === "add" ? "userPlus" : "phone"} size={14} />
-          {callAction === "add" ? "Ekle" : "Ara"}
+          {callAction === "add" ? "ekle" : "ara"}
         </button>
       )}
+      <button
+        className="row-btn square"
+        onClick={onChat}
+        title={`${c.name} ile mesajlaş`}
+        aria-label={c.unread > 0 ? `${c.name} ile mesajlaş, ${c.unread} okunmamış` : `${c.name} ile mesajlaş`}
+      >
+        <Icon name="message" size={15} />
+        {c.unread > 0 && <Rolling className="num unread" text={c.unread > 99 ? "99+" : String(c.unread)} />}
+      </button>
     </li>
   );
 }
 
+/** Always open: paste a code, press Enter. */
 function AddFriend({ toast }: { toast: (text: string) => void }) {
-  const [open, setOpen] = useState(false);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -180,7 +192,6 @@ function AddFriend({ toast }: { toast: (text: string) => void }) {
     try {
       await api.addFriend(code);
       setCode("");
-      setOpen(false);
       toast("İstek gönderildi. Kabul edince listende görünecek.");
     } catch (err) {
       toast(describeError(err));
@@ -189,38 +200,22 @@ function AddFriend({ toast }: { toast: (text: string) => void }) {
     }
   };
 
-  if (!open) {
-    return (
-      <div className="add">
-        <button className="add-row" onClick={() => setOpen(true)}>
-          <Icon name="plus" size={16} />
-          Arkadaş ekle
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <form className="add add-form" onSubmit={submit}>
-      <label htmlFor="friend-code">Arkadaşının kodunu yapıştır</label>
-      <div className="add-form-row">
-        <input
-          id="friend-code"
-          className="input"
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
-          placeholder="Kod"
-          spellCheck={false}
-          autoFocus
-        />
-        <button className="btn primary" disabled={busy || !code.trim()}>
-          Ekle
-        </button>
-        <button type="button" className="btn ghost" onClick={() => setOpen(false)}>
-          Vazgeç
-        </button>
-      </div>
+    <form className="add glass" onSubmit={submit}>
+      <Icon name="plus" size={16} />
+      <input
+        className="add-input"
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        onKeyDown={(e) => e.key === "Escape" && setCode("")}
+        placeholder="Arkadaşının kodunu yapıştır"
+        aria-label="Arkadaşının kodu"
+        spellCheck={false}
+      />
+      {!code && <span className="add-hint">↵ ekle</span>}
+      <button className="send" disabled={busy || !code.trim()} title="Arkadaş ekle" aria-label="Arkadaş ekle">
+        <Icon name="send" size={16} />
+      </button>
     </form>
   );
 }
@@ -234,16 +229,13 @@ function MyCode({ id }: { id: string }) {
   };
   return (
     <footer className="my-code">
-      <span className="my-code-label">Senin kodun</span>
-      <div className="my-code-row">
-        <code title={id}>
-          {id.slice(0, 8)}…{id.slice(-8)}
-        </code>
-        <button className="btn ghost" onClick={copy}>
-          <Icon name={copied ? "check" : "copy"} size={14} />
-          {copied ? "Kopyalandı" : "Kopyala"}
-        </button>
-      </div>
+      <span className="my-code-label">senin kodun</span>
+      <code title={id}>
+        {id.slice(0, 8)}…{id.slice(-8)}
+      </code>
+      <button className="my-code-copy" onClick={copy}>
+        {copied ? "kopyalandı" : "kopyala"}
+      </button>
     </footer>
   );
 }

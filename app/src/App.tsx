@@ -11,6 +11,7 @@ import { CallBar } from "./components/CallBar";
 import { ChatPage } from "./components/Chat";
 import { SettingsPage } from "./components/SettingsPage";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { ThemeContext, useApplyTheme } from "./theme";
 
 type Page = { kind: "home" } | { kind: "settings" } | { kind: "chat"; id: string };
 
@@ -25,6 +26,7 @@ function firstPage(): Page {
 
 export default function App() {
   const state = useAppState();
+  const shade = useApplyTheme(state?.settings.theme);
   const [page, setPage] = useState<Page>(firstPage);
   // Whether the call fills the window. Folded away, it's a strip under whatever page is open.
   const [callOpen, setCallOpen] = useState(scene !== "call-home");
@@ -102,6 +104,7 @@ export default function App() {
   const home = () => setPage({ kind: "home" });
 
   return (
+    <ThemeContext.Provider value={shade}>
     <div className="app">
       <UpdateBanner inCall={call != null} />
       {call && showCall ? (
@@ -128,5 +131,6 @@ export default function App() {
         ))}
       </div>
     </div>
+    </ThemeContext.Provider>
   );
 }

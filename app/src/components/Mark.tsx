@@ -2,35 +2,14 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon } from "./Icon";
 
-// The app icon's speech bubble with its level bars, without the tile behind it.
-
-export function Mark({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="200 180 620 680" aria-hidden="true">
-      <path
-        d="M232 300c0-50 40-90 90-90h380c50 0 90 40 90 90v300c0 50-40 90-90 90H470l-150 120v-120h0c-49 0-88-40-88-90Z"
-        fill="#f0a640"
-      />
-      <g stroke="#1c1406" strokeWidth="44" strokeLinecap="round">
-        <path d="M372 410v80" />
-        <path d="M452 350v200" />
-        <path d="M532 390v120" />
-        <path d="M612 330v240" />
-        <path d="M692 420v60" />
-      </g>
-    </svg>
-  );
-}
-
 /**
- * The window's title bar (Windows' own is turned off): mark and name, a screen's own controls,
+ * The window's title bar (Windows' own is turned off): the name, a screen's own controls,
  * then keep-on-top, minimize and close. Empty parts of the bar drag the window.
  */
 export function TopBar({ children }: { children?: React.ReactNode }) {
   return (
     <div className="topbar" data-tauri-drag-region>
       <span className="wordmark" data-tauri-drag-region>
-        <Mark />
         nevar
       </span>
       <span className="topbar-actions">

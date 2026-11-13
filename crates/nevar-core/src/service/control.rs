@@ -53,6 +53,16 @@ pub enum Control {
     Leave { call: CallId },
     /// A text message. `id` is random, so a message delivered twice is recognized.
     Chat { id: u64, text: String },
+    // New in 0.5. Keep new variants at the end: postcard numbers them in order.
+    /// Who runs `call`: the one who may take people out of it or silence them.
+    /// Sent to newcomers along with `Members`.
+    Host { call: CallId, host: EndpointId },
+    /// From the host: `who` is out of `call`. Goes to everyone in it, `who` included.
+    Remove { call: CallId, who: EndpointId },
+    /// From the host: turn your mic off (`on`), or back on if it was the host who turned it
+    /// off and you haven't touched it since (`!on`). You can always turn it back on yourself.
+    /// From a silenced member to the host, `!on`: I turned my mic back on myself.
+    Silence { call: CallId, on: bool },
 }
 
 pub async fn write(send: &mut SendStream, msg: &Control) -> Result<()> {

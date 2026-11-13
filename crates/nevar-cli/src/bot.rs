@@ -165,6 +165,9 @@ impl Bot {
             Notice::NoAnswer { name } => println!("☎ {name} açmadı."),
             Notice::MissedCall { name } => println!("☎ Cevapsız arama: {name}"),
             Notice::ConnectionLost { name } => println!("! {name} ile bağlantı koptu."),
+            Notice::Removed { name } => println!("☎ {name} beni görüşmeden çıkardı."),
+            Notice::Silenced { name } => println!("☎ {name} mikrofonumu kapattı. Açmak için: konuş"),
+            Notice::Unsilenced { name } => println!("☎ {name} mikrofonumu geri açtı."),
             Notice::Error { message } => println!("! {message}"),
         }
     }
@@ -205,6 +208,13 @@ impl Bot {
             "berbat" => self.set_network(Some(15), Some(200)),
             "normal" | "iyi" => self.set_network(Some(0), Some(0)),
             "durum" => self.print_status(),
+            "at" | "cikar" => self.host_action(arg, HostAction::Remove),
+            "sustur" => self.host_action(arg, HostAction::Silence),
+            "ac" => self.host_action(arg, HostAction::Unsilence),
+            "konus" => {
+                self.service.set_muted(false);
+                println!("🎙 Mikrofonum açık.");
+            }
             "cik" | "quit" | "exit" => return false,
             _ => println!("Bilinmeyen komut: {cmd}. Liste için: yardım"),
         }
@@ -226,6 +236,31 @@ impl Bot {
         match EndpointId::from_str(&friend.id).map_err(anyhow::Error::from).and_then(|id| self.service.call(&id)) {
             Ok(()) => println!("☎ {} aranıyor...", friend.name),
             Err(e) => println!("! Arayamadım: {e:#}"),
+        }
+    }
+
+    /// As the call's host: takes someone out of the call, or turns their mic off or back on.
+    fn host_action(&self, who: &str, action: HostAction) {
+        let wanted = fold(who);
+        let member = self
+            .service
+            .state()
+            .call
+            .and_then(|c| c.members.into_iter().find(|m| wanted.is_empty() || fold(&m.name).contains(&wanted)));
+        let Some(member) = member else {
+            println!("Görüşmede {}kimse yok.", if who.is_empty() { "" } else { "bu isimde " });
+            return;
+        };
+        let result = EndpointId::from_str(&member.id).map_err(anyhow::Error::from).and_then(|id| match action {
+            HostAction::Remove => self.service.remove_from_call(&id),
+            HostAction::Silence => self.service.silence(&id, true),
+            HostAction::Unsilence => self.service.silence(&id, false),
+        });
+        match (result, action) {
+            (Ok(()), HostAction::Remove) => println!("☎ {} görüşmeden çıkarıldı.", member.name),
+            (Ok(()), HostAction::Silence) => println!("☎ {} susturuldu.", member.name),
+            (Ok(()), HostAction::Unsilence) => println!("☎ {} mikrofonu geri açıldı.", member.name),
+            (Err(e), _) => println!("! Olmadı: {e:#}"),
         }
     }
 
@@ -321,12 +356,23 @@ fn voice_hint(voice: Voice) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+enum HostAction {
+    Remove,
+    Silence,
+    Unsilence,
+}
+
 fn print_help() {
     println!(
         "\
 Komutlar:
   ara [isim]        seni arar (gelen arama ekranını denemek için)
   kapat             görüşmeden çıkar
+  at [isim]         görüşmeyi ben başlattıysam seni görüşmeden çıkarır
+  sustur [isim]     görüşmeyi ben başlattıysam mikrofonunu kapatır
+  aç [isim]         susturduğum mikrofonunu geri açar
+  konuş             biri beni susturduysa mikrofonumu geri açar
   mesaj <metin>     sana mesaj atar
   yankı             sesini {ECHO_SECONDS} sn sonra geri yollar (görüşmede varsayılan)
   müzik             müzik kanalından stereo melodi paylaşır (müzik dur: durdurur)

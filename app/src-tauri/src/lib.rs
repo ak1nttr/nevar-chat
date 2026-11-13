@@ -167,6 +167,16 @@ fn start_call(service: State<Service>, id: String) -> CmdResult {
 }
 
 #[tauri::command]
+fn remove_from_call(service: State<Service>, id: String) -> CmdResult {
+    service.remove_from_call(&parse_id(&id)?).map_err(err)
+}
+
+#[tauri::command]
+fn silence(service: State<Service>, id: String, on: bool) -> CmdResult {
+    service.silence(&parse_id(&id)?, on).map_err(err)
+}
+
+#[tauri::command]
 async fn accept_call(service: State<'_, Service>) -> CmdResult {
     service.accept_call().map_err(err)
 }
@@ -417,6 +427,8 @@ pub fn run() {
             accept_call,
             decline_call,
             hang_up,
+            remove_from_call,
+            silence,
             set_volume,
             send_message,
             get_messages,

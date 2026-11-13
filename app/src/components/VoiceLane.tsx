@@ -1,13 +1,12 @@
-// The conversation strip: one lane per person, the last few seconds of their voice as bars.
+// One row per person in a call: their name, a thin ASCII band that flows while they talk, and a
+// short note (volume, relay, "çalıyor"). Quiet rows are still; only voice moves.
 
-import { useEffect, useRef, useState } from "react";
-import { Icon } from "./Icon";
+import { useState } from "react";
+import { Loader } from "./Bits";
+import { VoiceBand } from "./VoiceBand";
 
-export const BARS = 44;
 /** Above this (on the 0..1 display scale) someone counts as talking. */
 export const TALKING = 0.15;
-
-const silence = () => Array<number>(BARS).fill(0);
 
 /** Maps RMS onto 0..1 on a log scale: -50 dBFS is empty, -10 dBFS is full. */
 export function displayLevel(rms: number): number {
@@ -15,114 +14,99 @@ export function displayLevel(rms: number): number {
   return Math.min(1, Math.max(0, (db + 50) / 40));
 }
 
-/** Samples `value` every 100 ms into a rolling history while `running`. */
-export function useHistory(value: number, running: boolean): number[] {
-  const latest = useRef(value);
-  latest.current = value;
-  const [history, setHistory] = useState(silence);
-
-  useEffect(() => {
-    setHistory(silence());
-    if (!running) return;
-    const timer = setInterval(() => setHistory((h) => [...h.slice(1), latest.current]), 100);
-    return () => clearInterval(timer);
-  }, [running]);
-
-  return history;
-}
-
-/** Like `useHistory`, for a changing set of people at once, keyed by ID. Newcomers start silent. */
-export function useHistories(levels: Record<string, number>, running: boolean): Record<string, number[]> {
-  const latest = useRef(levels);
-  latest.current = levels;
-  const [histories, setHistories] = useState<Record<string, number[]>>({});
-
-  useEffect(() => {
-    setHistories({});
-    if (!running) return;
-    const timer = setInterval(
-      () =>
-        setHistories((old) => {
-          const next: Record<string, number[]> = {};
-          for (const [id, level] of Object.entries(latest.current)) {
-            next[id] = [...(old[id] ?? silence()).slice(1), level];
-          }
-          return next;
-        }),
-      100,
-    );
-    return () => clearInterval(timer);
-  }, [running]);
-
-  return histories;
-}
-
-/** A counter for the waiting sweep while the call isn't connected yet. */
-export function useTicker(running: boolean): number {
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setTick((t) => t + 1), 110);
-    return () => clearInterval(timer);
-  }, [running]);
-  return tick;
-}
-
 interface Props {
   label: string;
+  /** Live voice, 0..1 on the display scale. */
+  level?: number;
   note?: string;
   noteTone?: "on" | "warn";
-  /** Voice history, 0..1 per bar. Without it the lane shows a waiting sweep at `sweepAt`. */
-  levels?: number[];
-  sweepAt?: number;
-  /** Shorter bars, for calls with several people. */
-  compact?: boolean;
+  /** Rung into the call, not answered yet. */
+  ringing?: boolean;
   /** Their volume (1 as sent, 0 to 2). With `onVolume`, the name opens a slider for it. */
   volume?: number;
   onVolume?: (volume: number) => void;
+  /** They run the call. */
+  host?: boolean;
+  /** We host the call and turned their mic off. */
+  silenced?: boolean;
+  /** Only for the call's host: turn their mic off or back on, or take them out of the call. */
+  onSilence?: (on: boolean) => void;
+  onRemove?: () => void;
 }
 
-export function VoiceLane({ label, note, noteTone, levels, sweepAt = 0, compact, volume = 1, onVolume }: Props) {
+export function VoiceLane({
+  label,
+  level = 0,
+  note,
+  noteTone,
+  ringing,
+  volume = 1,
+  onVolume,
+  host,
+  silenced,
+  onSilence,
+  onRemove,
+}: Props) {
   const [adjusting, setAdjusting] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const toggle = (open: boolean) => {
+    setAdjusting(open);
+    setConfirmRemove(false);
+  };
   const percent = Math.round(volume * 100);
-  const tall = compact ? 24 : 50;
-  const bars = levels
-    ? levels.map((v) => ({ h: Math.max(3, Math.round(v * tall)), cls: v > TALKING ? "bar live" : "bar" }))
-    : Array.from({ length: BARS }, (_, i) => {
-        const d = Math.abs(i - (sweepAt % BARS));
-        return { h: d === 0 ? 10 : d === 1 ? 6 : 3, cls: d <= 1 ? "bar near" : "bar" };
-      });
+  const talking = level > TALKING;
+  // Below the talking line it's breath and room noise: keep the band still.
+  const shown = talking ? level : 0;
+
+  const meta = ringing ? (
+    <span className="lane-note">
+      <Loader /> çalıyor
+    </span>
+  ) : note ? (
+    <span className={noteTone ? `lane-note ${noteTone}` : "lane-note"}>
+      {note}
+    </span>
+  ) : onVolume ? (
+    <span className={percent !== 100 ? "lane-note changed" : "lane-note"}>
+      %{percent}
+    </span>
+  ) : null;
 
   return (
     <div
-      className={compact ? "lane compact" : "lane"}
+      className={talking ? "lane live" : ringing ? "lane waiting" : "lane"}
       // Right-clicking someone's lane opens their volume, like in other voice apps.
       onContextMenu={
         onVolume
           ? (e) => {
               e.preventDefault();
-              setAdjusting(true);
+              toggle(true);
             }
           : undefined
       }
     >
-      <div className="lane-head">
-        {onVolume ? (
-          <button
-            className={adjusting ? "lane-name open" : "lane-name"}
-            onClick={() => setAdjusting(!adjusting)}
-            aria-expanded={adjusting}
-            title={`${label} ses seviyesi (sağ tık da açar)`}
-          >
-            {label}
-            <span className={percent !== 100 ? "lane-volume changed" : "lane-volume"}>
-              <Icon name={volume === 0 ? "volumeOff" : "volume"} size={12} />%{percent}
+      <div className="lane-row">
+        <span className="lane-who">
+          {onVolume ? (
+            <button
+              className={adjusting ? "lane-name open" : "lane-name"}
+              onClick={() => toggle(!adjusting)}
+              aria-expanded={adjusting}
+              title={`${label} ses seviyesi (sağ tık da açar)`}
+            >
+              {label}
+            </button>
+          ) : (
+            <span className="lane-name">{label}</span>
+          )}
+          {host && (
+            <span className="lane-host" title="Görüşmeyi başlatan">
+              kurucu
             </span>
-          </button>
-        ) : (
-          <span>{label}</span>
-        )}
-        {note && <span className={noteTone}>{note}</span>}
+          )}
+        </span>
+        <VoiceBand letters={label} level={shown} />
+        {meta}
       </div>
       {adjusting && onVolume && (
         <div className="lane-slider">
@@ -133,7 +117,9 @@ export function VoiceLane({ label, note, noteTone, levels, sweepAt = 0, compact,
             max={2}
             step={0.05}
             value={volume}
-            style={{ "--fill": `${(volume / 2) * 100}%` } as React.CSSProperties}
+            style={
+              { "--fill": `${(volume / 2) * 100}%` } as React.CSSProperties
+            }
             onChange={(e) => onVolume(Number(e.target.value))}
             aria-label={`${label} ses seviyesi`}
           />
@@ -145,11 +131,46 @@ export function VoiceLane({ label, note, noteTone, levels, sweepAt = 0, compact,
           )}
         </div>
       )}
-      <div className="bars" aria-hidden="true">
-        {bars.map((b, i) => (
-          <span key={i} className={b.cls} style={{ height: b.h }} />
-        ))}
-      </div>
+      {adjusting && (onSilence || onRemove) && (
+        <div className="lane-host-actions">
+          {confirmRemove ? (
+            <>
+              <span className="lane-confirm">
+                {label} görüşmeden çıkarılsın mı?
+              </span>
+              <button className="btn danger" onClick={onRemove}>
+                Çıkar
+              </button>
+              <button
+                className="btn ghost"
+                onClick={() => setConfirmRemove(false)}
+              >
+                Vazgeç
+              </button>
+            </>
+          ) : (
+            <>
+              {onSilence && (
+                <button
+                  className="btn ghost"
+                  onClick={() => onSilence(!silenced)}
+                  title={silenced ? "Kapattığın mikrofonunu geri açar" : "Mikrofonunu kapatır, kendisi tekrar açabilir"}
+                >
+                  {silenced ? "Sesini aç" : "Herkes için sustur"}
+                </button>
+              )}
+              {onRemove && (
+                <button
+                  className="btn ghost danger-text"
+                  onClick={() => setConfirmRemove(true)}
+                >
+                  Görüşmeden çıkar
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

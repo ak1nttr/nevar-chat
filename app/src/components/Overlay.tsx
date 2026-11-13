@@ -9,8 +9,8 @@ import { hotkeyLabel } from "../keys";
 import { formatDuration, joinNames } from "./Call";
 import { ChatPage } from "./Chat";
 import { Icon } from "./Icon";
-import { Mark } from "./Mark";
 import { displayLevel, TALKING } from "./VoiceLane";
+import { ThemeContext, useApplyTheme } from "../theme";
 
 /** How long a new message stays on the corner panel. */
 const MESSAGE_MS = 10_000;
@@ -20,6 +20,7 @@ const scene = new URLSearchParams(location.search).get("scene");
 
 export function OverlayApp() {
   const state = useAppState();
+  const shade = useApplyTheme(state?.settings.theme);
   const [menu, setMenu] = useState(scene === "menu");
 
   useEffect(() => {
@@ -32,7 +33,11 @@ export function OverlayApp() {
   }, []);
 
   if (!state) return null;
-  return menu ? <QuickMenu state={state} /> : <Panel state={state} />;
+  return (
+    <ThemeContext.Provider value={shade}>
+      {menu ? <QuickMenu state={state} /> : <Panel state={state} />}
+    </ThemeContext.Provider>
+  );
 }
 
 // ---------- corner panel ----------
@@ -162,10 +167,7 @@ function QuickMenu({ state }: { state: AppState }) {
   return (
     <div className="qm">
       <header className="qm-head">
-        <span className="wordmark">
-          <Mark />
-          nevar
-        </span>
+        <span className="wordmark">nevar</span>
         <span className="qm-head-actions">
           <button className="btn ghost" onClick={() => run(api.openMain())}>
             Uygulamayı aç

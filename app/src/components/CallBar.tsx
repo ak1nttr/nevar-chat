@@ -1,7 +1,10 @@
 import { api, AppState, CallInfo, describeError } from "../api";
-import { useElapsed } from "../hooks";
+import { useCallStats, useElapsed } from "../hooks";
+import { Rolling } from "./Bits";
 import { formatDuration, joinNames } from "./Call";
 import { Icon } from "./Icon";
+import { displayLevel, TALKING } from "./VoiceLane";
+import { VoiceBand } from "./VoiceBand";
 
 interface Props {
   state: AppState;
@@ -11,22 +14,38 @@ interface Props {
   toast: (text: string) => void;
 }
 
-/** A folded-away call: a strip under the open page with who, how long, mute and hang up. */
+/**
+ * A folded-away call: a blue strip under the open page with who, how long, mute and hang up.
+ * Its letters flow while someone in the call talks.
+ */
 export function CallBar({ state, call, onOpen, toast }: Props) {
   const active = call.phase === "active";
   const elapsed = useElapsed(call.sinceMs);
+  const stats = useCallStats(active);
   const run = (p: Promise<unknown>) => p.catch((e) => toast(describeError(e)));
   const people = active ? call.members : call.ringing;
   const group = call.members.length + call.ringing.length > 1;
 
+  const talking = active && !state.deafened
+    ? call.members.filter((m) => displayLevel(stats?.peers.find((p) => p.id === m.id)?.level ?? 0) > TALKING)
+    : [];
+  const loudest = state.deafened ? 0 : Math.max(0, ...(stats?.peers.map((p) => displayLevel(p.level)) ?? []));
+  const status = !active ? "çalıyor" : talking.length > 0 ? `${joinNames(talking.map((m) => m.name.split(" ")[0]))} konuşuyor` : "görüşme";
+
   return (
     <div className="callbar" role="region" aria-label="Görüşme">
+      <VoiceBand
+        letters={people.map((p) => p.name).join("")}
+        level={loudest > TALKING ? loudest : 0}
+        look="strip"
+        className="callbar-field"
+      />
       <button className="callbar-open" onClick={onOpen} title="Görüşmeye dön">
-        <span className={active ? "callbar-dot live" : "callbar-dot"} />
         <span className="callbar-text">
+          <span className="callbar-status">{status}</span>
           <span className="callbar-names">{joinNames(people.map((p) => p.name))}</span>
-          <span className="callbar-status">{active ? formatDuration(elapsed) : "Çalıyor…"}</span>
         </span>
+        {active && <Rolling className="num callbar-time" text={formatDuration(elapsed)} />}
       </button>
       {active && (
         <button

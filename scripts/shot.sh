@@ -3,6 +3,7 @@
 # Usage: scripts/shot.sh <out-dir> [scene...]
 #   scenes: home call incoming ringing settings empty update (default: home call incoming settings)
 #   WIDTH / HEIGHT env vars set the window size (default 380x660).
+#   THEME=light|dark forces a theme; its shots are named <scene>-<theme>.png.
 set -uo pipefail
 
 OUT="$1"
@@ -38,7 +39,7 @@ for scene in "${SCENES[@]}"; do
   "$EDGE" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
     --window-size="${win_w},${h}" --virtual-time-budget=2500 \
     --user-data-dir="$profile" \
-    --screenshot="${win_out}\\${scene}.png" "http://localhost:1420/?scene=${scene}&frame=${w}x${h}" > /dev/null 2>&1 ||
+    --screenshot="${win_out}\\${scene}${THEME:+-$THEME}.png" "http://localhost:1420/?scene=${scene}&frame=${w}x${h}${THEME:+&theme=$THEME}" > /dev/null 2>&1 ||
     echo "failed: $scene" >&2
 done
 ls "$OUT"

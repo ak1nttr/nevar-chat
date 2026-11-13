@@ -71,6 +71,10 @@ pub struct Settings {
     pub overlay: OverlaySettings,
     /// How loud music others share plays for us: 0 to 1.
     pub music_volume: f32,
+    /// Light or dark look; `System` follows Windows.
+    pub theme: Theme,
+    /// The slow pixel creatures behind the friend list.
+    pub ambient_motion: bool,
 }
 
 impl Default for Settings {
@@ -87,6 +91,8 @@ impl Default for Settings {
             shortcuts: Shortcuts::default(),
             overlay: OverlaySettings::default(),
             music_volume: crate::voice::controls::DEFAULT_MUSIC_VOLUME,
+            theme: Theme::System,
+            ambient_motion: true,
         }
     }
 }
@@ -153,6 +159,15 @@ pub enum Corner {
     TopRight,
     BottomLeft,
     BottomRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 /// Serializable mirror of [`TransmitMode`].

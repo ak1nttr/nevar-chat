@@ -10,6 +10,7 @@ import {
   Mode,
   Settings,
   ShortcutName,
+  Theme,
   describeError,
 } from "../api";
 import { hotkeyFromKeyboard, hotkeyFromMouse, hotkeyLabel, sameHotkey, vkFromKeyboard, vkFromMouse, vkLabel } from "../keys";
@@ -78,6 +79,28 @@ export function SettingsPage({ state, onClose, toast }: Props) {
               onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
             />
           </Field>
+        </Group>
+
+        <Group label="Görünüm">
+          <div className="segmented" role="group" aria-label="Tema">
+            {(
+              [
+                ["system", "Windows'a uy"],
+                ["light", "Açık"],
+                ["dark", "Koyu"],
+              ] as [Theme, string][]
+            ).map(([theme, label]) => (
+              <button key={theme} className={settings.theme === theme ? "selected" : ""} onClick={() => update({ theme })}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <Switch
+            label="Arka plan hareketi"
+            hint="Arkadaş listesinin arkasında yavaşça yüzen piksel köpekbalıkları. Pencere arkadayken durur."
+            checked={settings.ambient_motion}
+            onChange={(ambient_motion) => update({ ambient_motion })}
+          />
         </Group>
 
         <Group label="Ses cihazları">
