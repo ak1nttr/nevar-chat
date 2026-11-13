@@ -10,6 +10,9 @@
 //! themselves ([`Control::Join`]) and learn about anyone they missed from the replies
 //! ([`Control::Members`]). Members who aren't friends with each other connect anyway
 //! for the length of the call ("guests"), and that connection goes away with it.
+//!
+//! Whoever started a call is its host and may take people out of it or silence them.
+//! When the host leaves, every remaining member picks the same successor: the smallest ID.
 
 pub mod control;
 
@@ -25,7 +28,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use iroh::endpoint::{Connection, RecvStream, SendStream, Side};
 use serde::Serialize;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -39,6 +42,11 @@ use crate::{
     node::Route,
     ptt,
     store::{Contact, ContactState, Settings, Store, Stored},
+    audio::{
+        StereoFrame,
+        app_capture::{self, AppCapture, AudioApp},
+        virtual_card::MicSource,
+    },
     voice::{AudioDevices, Call, Controls},
 };
 use control::{CallId, Control, Member, Relation};
@@ -74,6 +82,12 @@ pub enum Notice {
     CallDeclined { name: String },
     NoAnswer { name: String },
     MissedCall { name: String },
+    /// The call's host took us out of it.
+    Removed { name: String },
+    /// The call's host turned our mic off.
+    Silenced { name: String },
+    /// The call's host turned our mic back on.
+    Unsilenced { name: String },
     ConnectionLost { name: String },
     /// A text message arrived. `from` is their friend code, so the UI can tell
     /// whether that chat is already open.
@@ -133,6 +147,8 @@ pub struct PersonView {
     pub name: String,
     /// How loud they play for us in calls: 1.0 as sent, 0 to 2.
     pub volume: f32,
+    /// We host the call and turned their mic off; they haven't turned it back on.
+    pub silenced: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,6 +173,10 @@ pub struct CallView {
     pub ringing: Vec<PersonView>,
     /// Unix milliseconds when the first person joined (active calls only).
     pub since_ms: Option<u64>,
+    /// The app whose sound we share into the call, if any.
+    pub sharing: Option<String>,
+    /// Friend code of whoever runs the call (may be us), once known.
+    pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -197,6 +217,8 @@ pub struct PeerStatsView {
     pub recovered: u64,
     /// Their voice as we last played it.
     pub level: f32,
+    /// Music they share, as last played; zero when they aren't sharing (or it's quiet).
+    pub music_level: f32,
 }
 
 /// Someone ringing us into their call.
@@ -210,6 +232,12 @@ struct Ring {
 /// The call we're in, from our side.
 struct GroupCall {
     id: CallId,
+    /// Us.
+    me: EndpointId,
+    /// Who may take people out or silence them. `None` until a member tells us.
+    host: Option<EndpointId>,
+    /// As host: members whose mic we turned off, until they or we turn it back on.
+    silenced: HashSet<EndpointId>,
     /// Mic and speakers, opened when the first person joins.
     audio: Option<Call>,
     /// The people we're talking with, in the order they joined.
@@ -220,17 +248,44 @@ struct GroupCall {
     connecting: HashSet<EndpointId>,
     /// When the first person joined.
     since: Option<SystemTime>,
+    /// Music we're sharing into the call.
+    music: Option<Sharing>,
+}
+
+/// Music we share. Dropping it stops the sharing.
+struct Sharing {
+    /// What it's from, e.g. "Spotify".
+    name: String,
+    _source: SharingSource,
+}
+
+enum SharingSource {
+    App(#[allow(dead_code, reason = "kept for its Drop")] AppCapture),
+    Generated(#[allow(dead_code, reason = "kept for its Drop")] Generator),
+}
+
+/// Calls a function for each 20 ms of music, in real time, until dropped. For the test bot.
+struct Generator(Arc<AtomicBool>);
+
+impl Drop for Generator {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 impl GroupCall {
-    fn new(id: CallId) -> Self {
+    fn new(id: CallId, me: EndpointId, host: Option<EndpointId>) -> Self {
         Self {
             id,
+            me,
+            host,
+            silenced: HashSet::new(),
             audio: None,
             members: Vec::new(),
             ringing: HashMap::new(),
             connecting: HashSet::new(),
             since: None,
+            music: None,
         }
     }
 
@@ -249,8 +304,13 @@ impl GroupCall {
         self.connecting.remove(id);
         let was_member = self.members.contains(id);
         self.members.retain(|m| m != id);
+        self.silenced.remove(id);
         if let Some(audio) = &self.audio {
             audio.remove_peer(id);
+        }
+        // The host left: everyone still here picks the same successor.
+        if self.host == Some(*id) {
+            self.host = self.members.iter().chain([&self.me]).min().copied();
         }
         was_member
     }
@@ -311,6 +371,16 @@ impl Drop for Peer {
 
 type EventSink = Box<dyn Fn(Event) + Send + Sync>;
 
+/// Where calls get their sound.
+pub enum AudioMode {
+    /// The mic and speakers from the settings.
+    Devices,
+    /// None at all: calls track who's in them but never touch the sound card. For tests.
+    Off,
+    /// A virtual sound card; each call gets a fresh mic signal from this. For the test bot.
+    Virtual(Box<dyn Fn() -> Box<dyn MicSource> + Send + Sync>),
+}
+
 struct Inner {
     node: Node,
     store: Store,
@@ -324,14 +394,15 @@ struct Inner {
     history: Mutex<History>,
     /// Mic and speakers open for a mic test, outside any call. Taken on its own.
     mic_test: Mutex<Option<Call>>,
+    /// The call whose host turned our mic off, until we or they turn it back on.
+    silenced_in: Mutex<Option<CallId>>,
     // Lock order: `stored`, then `peers`, then `call`, then `guests`. Never send while
     // holding `call`: sending takes `peers`.
     call: Mutex<CallSlot>,
     controls: Arc<Controls>,
     ptt: ptt::PushToTalk,
     online: AtomicBool,
-    /// Off in tests: calls track who's in them but never touch the sound card.
-    open_audio: bool,
+    audio: AudioMode,
     on_event: EventSink,
     /// Every background task goes through this, so methods are safe to call from any
     /// thread, including a UI thread outside the async runtime.
@@ -344,7 +415,7 @@ pub struct Service(Arc<Inner>);
 impl Service {
     /// Loads identity and state from `data_dir` and starts connecting to friends.
     pub async fn start(data_dir: &Path, on_event: impl Fn(Event) + Send + Sync + 'static) -> Result<Self> {
-        Self::start_with(data_dir, true, on_event).await
+        Self::start_with(data_dir, AudioMode::Devices, on_event).await
     }
 
     /// Like [`Service::start`], but calls never open the mic or speakers. For tests.
@@ -352,12 +423,13 @@ impl Service {
         data_dir: &Path,
         on_event: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<Self> {
-        Self::start_with(data_dir, false, on_event).await
+        Self::start_with(data_dir, AudioMode::Off, on_event).await
     }
 
-    async fn start_with(
+    /// Starts with calls that use `audio` for sound. [`Service::start`] uses the sound card.
+    pub async fn start_with(
         data_dir: &Path,
-        open_audio: bool,
+        audio: AudioMode,
         on_event: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
@@ -386,11 +458,12 @@ impl Service {
             history_store,
             history: Mutex::new(history),
             mic_test: Mutex::new(None),
+            silenced_in: Mutex::new(None),
             call: Mutex::new(CallSlot::Idle),
             controls,
             ptt,
             online: AtomicBool::new(false),
-            open_audio,
+            audio,
             on_event: Box::new(on_event),
             rt: tokio::runtime::Handle::current(),
         }));
@@ -448,6 +521,7 @@ impl Service {
             let person = |id: &EndpointId| PersonView {
                 id: id.to_string(),
                 volume: volume(id),
+                silenced: false,
                 name: stored
                     .contacts
                     .get(id)
@@ -467,11 +541,14 @@ impl Service {
                         .map(|m| PersonView {
                             id: m.id.to_string(),
                             volume: volume(&m.id),
+                            silenced: false,
                             name: stored.contacts.get(&m.id).map_or_else(|| m.name.clone(), |c| c.name.clone()),
                         })
                         .collect(),
                     ringing: Vec::new(),
                     since_ms: None,
+                    sharing: None,
+                    host: None,
                 }),
                 CallSlot::InCall(g) => {
                     let mut ringing: Vec<_> = g.ringing.iter().collect();
@@ -479,9 +556,15 @@ impl Service {
                     Some(CallView {
                         phase: if g.members.is_empty() { CallPhase::Outgoing } else { CallPhase::Active },
                         caller: None,
-                        members: g.members.iter().map(person).collect(),
+                        members: g
+                            .members
+                            .iter()
+                            .map(|id| PersonView { silenced: g.silenced.contains(id), ..person(id) })
+                            .collect(),
                         ringing: ringing.into_iter().map(|(id, _)| person(id)).collect(),
                         since_ms: g.since.map(unix_ms),
+                        sharing: g.music.as_ref().map(|m| m.name.clone()),
+                        host: g.host.map(|h| h.to_string()),
                     })
                 }
             }
@@ -523,6 +606,7 @@ impl Service {
                 lost: p.jitter.lost,
                 recovered: p.jitter.recovered,
                 level: p.level,
+                music_level: p.music_level,
             })
             .collect();
         let route = if s.peers.iter().any(|p| p.route == Route::Relayed) {
@@ -606,8 +690,7 @@ impl Service {
         }
         let mut test = self.0.mic_test.lock().unwrap();
         if test.is_none() {
-            let call = Call::start(&self.audio_devices(), self.0.controls.clone())
-                .map_err(|e| e.context("couldn't open your mic or speakers"))?;
+            let call = self.open_call_audio()?.context("this copy of nevar has no sound")?;
             call.set_loopback(true);
             *test = Some(call);
         }
@@ -631,12 +714,100 @@ impl Service {
     /// Mute and deafen are per-session toggles, not saved settings.
     pub fn set_muted(&self, muted: bool) {
         self.0.controls.set_muted(muted);
+        // Touching the mic ourselves ends the host's silencing. If we turned it back on,
+        // tell the host so they stop showing us as silenced.
+        let silenced_in = self.0.silenced_in.lock().unwrap().take();
+        if let Some(call) = silenced_in
+            && !muted
+        {
+            let host = match &*self.0.call.lock().unwrap() {
+                CallSlot::InCall(g) if g.id == call => g.host,
+                _ => None,
+            };
+            if let Some(host) = host {
+                self.send(&host, Control::Silence { call, on: false });
+            }
+        }
         self.changed();
     }
 
     pub fn set_deafened(&self, deafened: bool) {
         self.0.controls.set_deafened(deafened);
         self.changed();
+    }
+
+    // ----- music sharing -----
+
+    /// Apps making sound that could be shared.
+    pub fn music_apps(&self) -> Result<Vec<AudioApp>> {
+        app_capture::list_apps()
+    }
+
+    /// Shares the sound of the app with process `pid` with everyone in the call,
+    /// replacing anything shared before.
+    pub fn share_app(&self, pid: u32) -> Result<()> {
+        let app = app_capture::list_apps()?
+            .into_iter()
+            .find(|a| a.pid == pid)
+            .context("that app isn't making sound anymore")?;
+        let feed = self.music_feed()?;
+        let capture = AppCapture::start(&app, feed)?;
+        self.set_sharing(Sharing { name: app.name, _source: SharingSource::App(capture) })
+    }
+
+    /// Shares music made by `next`, called for every 20 ms of it. For the test bot.
+    pub fn share_generated(&self, name: &str, mut next: impl FnMut() -> StereoFrame + Send + 'static) -> Result<()> {
+        let feed = self.music_feed()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        std::thread::Builder::new().name("music-generator".into()).spawn(move || {
+            let tick = Duration::from_millis(20);
+            let mut due = Instant::now();
+            while !stopped.load(Ordering::Relaxed) && feed.send(next()).is_ok() {
+                due += tick;
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
+        })?;
+        self.set_sharing(Sharing { name: name.to_string(), _source: SharingSource::Generated(Generator(stop)) })
+    }
+
+    pub fn stop_sharing(&self) {
+        let stopped = match &mut *self.0.call.lock().unwrap() {
+            CallSlot::InCall(g) => g.music.take(),
+            _ => None,
+        };
+        if stopped.is_some() {
+            self.changed();
+        }
+    }
+
+    /// Where to send music for the call we're talking in.
+    fn music_feed(&self) -> Result<crate::voice::MusicFeed> {
+        match &*self.0.call.lock().unwrap() {
+            CallSlot::InCall(GroupCall { audio: Some(audio), .. }) => audio.share_music(),
+            _ => bail!("music can only be shared during a call"),
+        }
+    }
+
+    fn set_sharing(&self, sharing: Sharing) -> Result<()> {
+        match &mut *self.0.call.lock().unwrap() {
+            CallSlot::InCall(g) if g.audio.is_some() => g.music = Some(sharing),
+            _ => bail!("music can only be shared during a call"),
+        }
+        self.changed();
+        Ok(())
+    }
+
+    pub fn muted(&self) -> bool {
+        self.0.controls.muted()
+    }
+
+    pub fn deafened(&self) -> bool {
+        self.0.controls.deafened()
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.0.stored.lock().unwrap().settings.clone()
     }
 
     fn apply_settings(&self, s: &Settings) {
@@ -646,6 +817,7 @@ impl Service {
         c.set_echo_cancellation(s.echo_cancellation);
         c.set_auto_gain(s.auto_gain);
         c.set_output_volume(s.output_volume);
+        c.set_music_volume(s.music_volume);
         self.0.ptt.set_key(s.push_to_talk_key);
     }
 
@@ -854,7 +1026,8 @@ impl Service {
         let (call, members) = {
             let mut slot = self.0.call.lock().unwrap();
             if let CallSlot::Idle = &*slot {
-                *slot = CallSlot::InCall(GroupCall::new(new_call_id()));
+                let me = self.0.node.id();
+                *slot = CallSlot::InCall(GroupCall::new(new_call_id(), me, Some(me)));
             }
             let CallSlot::InCall(g) = &mut *slot else { bail!("answer or decline the incoming call first") };
             if g.involves(id) {
@@ -901,7 +1074,8 @@ impl Service {
             let CallSlot::Ringing(ring) = &*slot else { bail!("nobody is calling") };
             let (call, from) = (ring.call, ring.from);
             let members: Vec<_> = ring.members.iter().filter(|m| m.id != me && m.id != from).cloned().collect();
-            let mut g = GroupCall::new(call);
+            // The host is whoever the members say it is, once they answer.
+            let mut g = GroupCall::new(call, me, None);
             g.connecting.extend(members.iter().map(|m| m.id));
             *slot = CallSlot::InCall(g);
             (call, from, members)
@@ -959,6 +1133,55 @@ impl Service {
         self.changed();
     }
 
+    /// As the call's host: takes `id` out of it, for everyone. Anyone may ring them back in.
+    pub fn remove_from_call(&self, id: &EndpointId) -> Result<()> {
+        let (call, everyone, ended) = {
+            let mut slot = self.0.call.lock().unwrap();
+            let g = self.hosted(&mut slot, id)?;
+            let everyone: Vec<_> = g.members.iter().chain(g.connecting.iter()).copied().collect();
+            g.remove(id);
+            (g.id, everyone, g.is_empty())
+        };
+        for to in everyone {
+            self.send(&to, Control::Remove { call, who: *id });
+        }
+        if ended {
+            self.end_call(call);
+        }
+        self.changed();
+        Ok(())
+    }
+
+    /// As the call's host: turns `id`'s mic off (`on`), or back on if we were the ones who
+    /// turned it off. They can always turn it back on themselves.
+    pub fn silence(&self, id: &EndpointId, on: bool) -> Result<()> {
+        let call = {
+            let mut slot = self.0.call.lock().unwrap();
+            let g = self.hosted(&mut slot, id)?;
+            if on {
+                g.silenced.insert(*id);
+            } else {
+                g.silenced.remove(id);
+            }
+            g.id
+        };
+        self.send(id, Control::Silence { call, on });
+        self.changed();
+        Ok(())
+    }
+
+    /// The call we host, if `id` is talking in it.
+    fn hosted<'a>(&self, slot: &'a mut CallSlot, id: &EndpointId) -> Result<&'a mut GroupCall> {
+        let CallSlot::InCall(g) = slot else { bail!("not in a call") };
+        if g.host != Some(self.0.node.id()) {
+            bail!("only the one who started the call can do that");
+        }
+        if !g.members.contains(id) {
+            bail!("{} isn't in the call", self.display_name(id));
+        }
+        Ok(g)
+    }
+
     /// Adds `peer` to the call's audio, opening mic and speakers if they're the first.
     /// If that fails, we leave the call.
     fn admit(&self, call: CallId, peer: EndpointId) -> Result<()> {
@@ -974,19 +1197,20 @@ impl Service {
             g.since.get_or_insert_with(SystemTime::now);
             g.audio.is_none()
         };
-        if needs_audio && self.0.open_audio {
+        if needs_audio {
             // A call takes over the mic and speakers from a mic test.
             self.stop_mic_test();
             // Opening devices takes a moment; don't hold the lock for it.
-            match Call::start(&self.audio_devices(), self.0.controls.clone()) {
-                Ok(audio) => {
+            match self.open_call_audio() {
+                Ok(None) => {}
+                Ok(Some(audio)) => {
                     if let Some(g) = self.0.call.lock().unwrap().group(call) {
                         g.audio.get_or_insert(audio);
                     }
                 }
                 Err(e) => {
                     self.hang_up();
-                    return Err(e.context("couldn't open your mic or speakers"));
+                    return Err(e);
                 }
             }
         }
@@ -1093,6 +1317,7 @@ impl Service {
 
     /// Lets go of the people we only talked to because of the call.
     fn after_call(&self) {
+        *self.0.silenced_in.lock().unwrap() = None;
         let guests: Vec<_> = self.0.guests.lock().unwrap().drain().map(|(id, _)| id).collect();
         for id in guests {
             if self.contact_state(&id).is_none() {
@@ -1119,6 +1344,18 @@ impl Service {
                 self.notice(Notice::Error { message: format!("{e:#}") });
                 return;
             }
+        }
+    }
+
+    /// Sound for a call or mic test, from whatever this service uses. `None` without sound.
+    fn open_call_audio(&self) -> Result<Option<Call>> {
+        let controls = self.0.controls.clone();
+        match &self.0.audio {
+            AudioMode::Devices => Call::start(&self.audio_devices(), controls)
+                .map(Some)
+                .map_err(|e| e.context("couldn't open your mic or speakers")),
+            AudioMode::Off => Ok(None),
+            AudioMode::Virtual(source) => Call::start_virtual(source(), controls).map(Some),
         }
     }
 
@@ -1181,17 +1418,20 @@ impl Service {
                 let others = {
                     let mut slot = self.0.call.lock().unwrap();
                     match slot.group(call) {
-                        Some(g) if g.ringing.contains_key(&from) => Some(g.others(&from)),
+                        Some(g) if g.ringing.contains_key(&from) => Some((g.others(&from), g.host)),
                         _ => None,
                     }
                 };
-                if let Some(others) = others {
+                if let Some((others, host)) = others {
                     if let Err(e) = self.admit(call, from) {
                         self.notice(Notice::Error { message: format!("{e:#}") });
                         return;
                     }
-                    // They join the others themselves; tell them who's here now.
+                    // They join the others themselves; tell them who's here now, and who runs it.
                     self.send(&from, Control::Members { call, members: others });
+                    if let Some(host) = host {
+                        self.send(&from, Control::Host { call, host });
+                    }
                 }
             }
             Control::Decline { call } => {
@@ -1214,14 +1454,17 @@ impl Service {
                 }
             }
             Control::Join { call } => {
-                let in_call = self.0.call.lock().unwrap().group(call).map(|g| g.others(&from));
+                let in_call = self.0.call.lock().unwrap().group(call).map(|g| (g.others(&from), g.host));
                 match in_call {
-                    Some(others) => {
+                    Some((others, host)) => {
                         if let Err(e) = self.admit(call, from) {
                             self.notice(Notice::Error { message: format!("{e:#}") });
                             return;
                         }
                         self.send(&from, Control::Members { call, members: others });
+                        if let Some(host) = host {
+                            self.send(&from, Control::Host { call, host });
+                        }
                     }
                     // We already left: don't wait for us.
                     None => self.send(&from, Control::Leave { call }),
@@ -1263,6 +1506,73 @@ impl Service {
                     self.end_call(call);
                 }
                 self.changed();
+            }
+            Control::Host { call, host } => {
+                if let Some(g) = self.0.call.lock().unwrap().group(call) {
+                    g.host = Some(host);
+                }
+                self.changed();
+            }
+            Control::Remove { call, who } => {
+                enum Outcome {
+                    Us,
+                    Other { ended: bool },
+                }
+                let outcome = {
+                    let mut slot = self.0.call.lock().unwrap();
+                    let Some(g) = slot.group(call) else { return };
+                    // Only the host may do this.
+                    if g.host != Some(from) {
+                        return;
+                    }
+                    if who == me {
+                        Outcome::Us
+                    } else {
+                        g.remove(&who);
+                        Outcome::Other { ended: g.is_empty() }
+                    }
+                };
+                match outcome {
+                    Outcome::Us => {
+                        self.hang_up();
+                        self.notice(Notice::Removed { name });
+                    }
+                    Outcome::Other { ended } => {
+                        if ended {
+                            self.end_call(call);
+                        }
+                        self.changed();
+                    }
+                }
+            }
+            Control::Silence { call, on } => {
+                let (from_host, we_host) = {
+                    let mut slot = self.0.call.lock().unwrap();
+                    let Some(g) = slot.group(call) else { return };
+                    if g.host == Some(me) && !on {
+                        // A member we silenced turned their mic back on.
+                        g.silenced.remove(&from);
+                    }
+                    (g.host == Some(from), g.host == Some(me))
+                };
+                if from_host {
+                    let mut silenced_in = self.0.silenced_in.lock().unwrap();
+                    if on {
+                        self.0.controls.set_muted(true);
+                        *silenced_in = Some(call);
+                        drop(silenced_in);
+                        self.notice(Notice::Silenced { name });
+                    } else if *silenced_in == Some(call) {
+                        // Only undo what the host did: never turn on a mic we turned off ourselves.
+                        self.0.controls.set_muted(false);
+                        *silenced_in = None;
+                        drop(silenced_in);
+                        self.notice(Notice::Unsilenced { name });
+                    }
+                }
+                if from_host || we_host {
+                    self.changed();
+                }
             }
             Control::Hello { .. } | Control::Chat { .. } => unreachable!("handled by on_message"),
         }

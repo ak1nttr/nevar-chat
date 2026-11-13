@@ -1,6 +1,13 @@
 //! Mic and speaker streams via cpal (WASAPI on Windows).
 
-use std::{sync::mpsc::SyncSender, time::Duration};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{RecvTimeoutError, SyncSender},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use cpal::{
@@ -18,6 +25,10 @@ use crate::voice::Playout;
 /// The stream itself lives on the thread that opened it, which waits until this handle is
 /// dropped and then closes it. cpal sets up COM per thread on Windows, so a stream is opened
 /// and closed on one thread that stays alive the whole time.
+///
+/// If the device goes away mid-call (unplugged), or the stream follows the Windows default
+/// and the default changes (headphones plugged in), that thread opens the stream again on the
+/// device that's there now. The call keeps going with a short gap.
 pub struct AudioStream {
     /// Dropping this wakes the owning thread, which closes the stream.
     _stop: std::sync::mpsc::Sender<()>,
@@ -86,26 +97,66 @@ fn device_name(device: &Device) -> String {
 /// device another app holds) must fail the call with a message instead of freezing it.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How often the device thread checks whether its stream needs reopening.
+const WATCH_INTERVAL: Duration = Duration::from_millis(250);
+/// Windows needs a moment after a device change before the new default opens cleanly.
+const SETTLE: Duration = Duration::from_millis(300);
+/// Between attempts while no usable device is there.
+const RETRY: Duration = Duration::from_secs(1);
+
+/// Set from the stream's error callback when the stream can't go on and must be reopened.
+type Lost = Arc<AtomicBool>;
+
 /// Opens a stream with `open` on a thread of its own, which then keeps it until the returned
-/// handle is dropped. Gives up after [`OPEN_TIMEOUT`]; if the device answers later after all,
-/// that thread closes the stream right away.
+/// handle is dropped, reopening it with `open(lost, reopen = true)` whenever it's lost.
+/// Gives up after [`OPEN_TIMEOUT`] if the first open doesn't finish; if the device answers
+/// later after all, that thread closes the stream right away.
 fn open_on_own_thread(
     what: &'static str,
-    open: impl FnOnce() -> Result<(Stream, Opened)> + Send + 'static,
+    mut open: impl FnMut(&Lost, bool) -> Result<(Stream, Opened)> + Send + 'static,
 ) -> Result<AudioStream> {
     let (opened_tx, opened_rx) = std::sync::mpsc::channel();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-    std::thread::Builder::new().name(format!("audio-{what}")).spawn(move || match open() {
-        Ok((stream, opened)) => {
-            if opened_tx.send(Ok(opened)).is_ok() {
-                // Runs until the handle is dropped (the channel closes).
-                let _ = stop_rx.recv();
+    std::thread::Builder::new().name(format!("audio-{what}")).spawn(move || {
+        let lost = Lost::default();
+        let mut stream = match open(&lost, false) {
+            Ok((stream, opened)) => {
+                if opened_tx.send(Ok(opened)).is_err() {
+                    return; // Too late: the call already gave up on this device.
+                }
+                Some(stream)
             }
-            drop(stream);
+            Err(e) => {
+                let _ = opened_tx.send(Err(e));
+                return;
+            }
+        };
+        // Runs until the handle is dropped (the channel closes).
+        while let Err(RecvTimeoutError::Timeout) = stop_rx.recv_timeout(WATCH_INTERVAL) {
+            if !lost.load(Ordering::Relaxed) {
+                continue;
+            }
+            // Close the old stream first: the playout or mic feed moves to the new one.
+            if stream.take().is_some() {
+                info!("the {what} changed or went away, reopening");
+                std::thread::sleep(SETTLE);
+            }
+            lost.store(false, Ordering::Relaxed);
+            match open(&lost, true) {
+                Ok((new, (device_name, _))) => {
+                    info!(%device_name, "{what} reopened");
+                    stream = Some(new);
+                }
+                Err(e) => {
+                    debug!("{what} not back yet: {e:#}");
+                    lost.store(true, Ordering::Relaxed);
+                    if !matches!(stop_rx.recv_timeout(RETRY), Err(RecvTimeoutError::Timeout)) {
+                        break;
+                    }
+                }
+            }
         }
-        Err(e) => {
-            let _ = opened_tx.send(Err(e));
-        }
+        drop(stream);
     })?;
     match opened_rx.recv_timeout(OPEN_TIMEOUT) {
         Ok(Ok((device_name, config))) => Ok(AudioStream { _stop: stop_tx, device_name, config }),
@@ -117,16 +168,52 @@ fn open_on_own_thread(
     }
 }
 
+/// The device to open. On a reopen, a chosen device that's gone falls back to the Windows
+/// default, so pulling out a headset moves the call to the speakers instead of going silent.
+fn find_or_default(
+    choice: &DeviceChoice,
+    reopen: bool,
+    devices: impl Iterator<Item = Device>,
+    default: Option<Device>,
+    kind: &str,
+) -> Result<Device> {
+    match find_device(choice, devices, default.clone(), kind) {
+        Err(e) if reopen && choice.is_some() => {
+            warn!("{e:#}; using the default {kind} for now");
+            find_device(&None, std::iter::empty(), default, kind)
+        }
+        found => found,
+    }
+}
+
+/// Error callback for a stream: logs, and flags the stream for reopening when the device is
+/// gone or Windows moved the default to another device.
+fn on_stream_error(which: &'static str, lost: &Lost) -> impl FnMut(cpal::Error) + Send + 'static {
+    let lost = lost.clone();
+    move |e| {
+        report_stream_error(which, &e);
+        if matches!(e.kind(), cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::DeviceNotAvailable) {
+            lost.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Opens a mic and sends 20 ms mono 48 kHz frames to `frames`.
 /// Frames are dropped (not queued) if the receiver falls behind.
 pub fn start_capture(choice: &DeviceChoice, frames: SyncSender<Frame>) -> Result<AudioStream> {
     let choice = choice.clone();
-    open_on_own_thread("microphone", move || open_capture(&choice, frames))
+    open_on_own_thread("microphone", move |lost, reopen| open_capture(&choice, reopen, frames.clone(), lost))
 }
 
-fn open_capture(choice: &DeviceChoice, frames: SyncSender<Frame>) -> Result<(Stream, Opened)> {
+fn open_capture(
+    choice: &DeviceChoice,
+    reopen: bool,
+    frames: SyncSender<Frame>,
+    lost: &Lost,
+) -> Result<(Stream, Opened)> {
     let host = cpal::default_host();
-    let device = find_device(choice, host.input_devices()?, host.default_input_device(), "microphone")?;
+    let device =
+        find_or_default(choice, reopen, host.input_devices()?, host.default_input_device(), "microphone")?;
     let supported = pick_input_config(&device)?;
     let format = supported.sample_format();
     let mut config = supported.config();
@@ -134,10 +221,10 @@ fn open_capture(choice: &DeviceChoice, frames: SyncSender<Frame>) -> Result<(Str
     let framer = Framer::new(config.sample_rate, config.channels as usize, frames);
 
     let stream = match format {
-        SampleFormat::F32 => build_input::<f32>(&device, &config, framer),
-        SampleFormat::I16 => build_input::<i16>(&device, &config, framer),
-        SampleFormat::I32 => build_input::<i32>(&device, &config, framer),
-        SampleFormat::U16 => build_input::<u16>(&device, &config, framer),
+        SampleFormat::F32 => build_input::<f32>(&device, &config, framer, lost),
+        SampleFormat::I16 => build_input::<i16>(&device, &config, framer, lost),
+        SampleFormat::I32 => build_input::<i32>(&device, &config, framer, lost),
+        SampleFormat::U16 => build_input::<u16>(&device, &config, framer, lost),
         other => bail!("unsupported microphone sample format {other}"),
     }?;
     stream.play()?;
@@ -163,7 +250,7 @@ fn pick_input_config(device: &Device) -> Result<SupportedStreamConfig> {
     }
 }
 
-fn build_input<T>(device: &Device, config: &StreamConfig, mut framer: Framer) -> Result<Stream>
+fn build_input<T>(device: &Device, config: &StreamConfig, mut framer: Framer, lost: &Lost) -> Result<Stream>
 where
     T: SizedSample,
     f32: FromSample<T>,
@@ -171,7 +258,7 @@ where
     let stream = device.build_input_stream(
         *config,
         move |data: &[T], _| framer.push_interleaved(data),
-        |e| report_stream_error("mic", &e),
+        on_stream_error("mic", lost),
         None,
     )?;
     Ok(stream)
@@ -268,12 +355,21 @@ impl Linear {
 /// Opens speakers or headphones and plays whatever `playout` produces.
 pub fn start_playback(choice: &DeviceChoice, playout: Playout) -> Result<AudioStream> {
     let choice = choice.clone();
-    open_on_own_thread("speakers", move || open_playback(&choice, playout))
+    // Shared so a reopened stream carries on where the old one stopped. Only one stream at a
+    // time uses it (the old one is closed first), so the lock is never contended.
+    let playout = Arc::new(Mutex::new(playout));
+    open_on_own_thread("speakers", move |lost, reopen| open_playback(&choice, reopen, playout.clone(), lost))
 }
 
-fn open_playback(choice: &DeviceChoice, mut playout: Playout) -> Result<(Stream, Opened)> {
+fn open_playback(
+    choice: &DeviceChoice,
+    reopen: bool,
+    playout: Arc<Mutex<Playout>>,
+    lost: &Lost,
+) -> Result<(Stream, Opened)> {
     let host = cpal::default_host();
-    let device = find_device(choice, host.output_devices()?, host.default_output_device(), "speaker")?;
+    let device =
+        find_or_default(choice, reopen, host.output_devices()?, host.default_output_device(), "speaker")?;
     let channels = device.default_output_config()?.channels();
     // Windows converts our 48 kHz float stream to whatever the device runs at.
     let config = StreamConfig {
@@ -283,19 +379,28 @@ fn open_playback(choice: &DeviceChoice, mut playout: Playout) -> Result<(Stream,
     };
 
     let channels = channels as usize;
-    let mut mono = vec![0.0f32; SAMPLE_RATE as usize];
+    let mut stereo = vec![0.0f32; SAMPLE_RATE as usize * 2];
     let stream = device.build_output_stream(
         config,
         move |data: &mut [f32], _| {
             let frames = data.len() / channels;
             // Callbacks are a few ms; the buffer is sized for a full second.
-            let mono = &mut mono[..frames.min(SAMPLE_RATE as usize)];
-            playout.fill(mono);
-            for (out, &s) in data.chunks_exact_mut(channels).zip(mono.iter()) {
-                out.fill(s);
+            let stereo = &mut stereo[..frames.min(SAMPLE_RATE as usize) * 2];
+            match playout.try_lock() {
+                Ok(mut playout) => playout.fill(stereo),
+                Err(_) => stereo.fill(0.0),
+            }
+            for (out, lr) in data.chunks_exact_mut(channels).zip(stereo.chunks_exact(2)) {
+                if channels == 1 {
+                    out[0] = 0.5 * (lr[0] + lr[1]);
+                } else {
+                    // Front left and right; any further speakers stay quiet.
+                    out[..2].copy_from_slice(lr);
+                    out[2..].fill(0.0);
+                }
             }
         },
-        |e| report_stream_error("speaker", &e),
+        on_stream_error("speaker", lost),
         None,
     )?;
     stream.play()?;

@@ -45,3 +45,13 @@ Testler (bazıları internet ister, gerçek node'lar başlatır):
 ```bash
 cargo test -p nevar-core
 ```
+
+### Test botu
+
+Uygulamayı tek başına denemek için sahte bir arkadaş. Uygulamanın gerçek servisini sanal bir ses kartıyla çalıştırır: arkadaşlık isteğini kabul eder, aramaları açar, sesini 1,5 sn sonra geri okur, mesajlara cevap verir; seni arayabilir, müzik paylaşabilir, kötü ağ taklidi yapabilir. Görüşmeyi o başlattıysa seni susturabilir ya da çıkarabilir.
+
+```bash
+cargo run --release -p nevar-cli -- bot
+```
+
+Yazdığı kodu "Arkadaşının kodunu yapıştır" kutusuna yapıştır, komutlar için terminaline `yardım` yaz. Grup araması için ikinci bir botu `--profile 2` ile başlatıp görüşmeye ekle.

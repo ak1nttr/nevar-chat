@@ -231,3 +231,79 @@ async fn group_call_reaches_everyone_and_survives_leavers() {
 
     tokio::join!(a.service.shutdown(), b.service.shutdown(), c.service.shutdown());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn host_can_silence_and_remove_and_hands_over_on_leaving() {
+    let (a, b, c) = tokio::join!(Peer::start("Ayse"), Peer::start("Burak"), Peer::start("Cem"));
+    for p in [&a, &b, &c] {
+        p.wait_for("online", |s| s.me.online).await;
+    }
+    befriend(&a, &b).await;
+    befriend(&a, &c).await;
+    let (a_id, b_id, c_id) = (a.id(), b.id(), c.id());
+    let host = |s: &AppState| s.call.as_ref().and_then(|c| c.host.clone());
+
+    // Ayse starts the call, so she runs it, and everyone who joins learns that.
+    a.service.call(&b_id).unwrap();
+    b.wait_for("B is ringing", |s| s.call.as_ref().is_some_and(|c| c.phase == CallPhase::Incoming)).await;
+    b.service.accept_call().unwrap();
+    a.service.call(&c_id).unwrap();
+    c.wait_for("C is ringing", |s| s.call.as_ref().is_some_and(|c| c.phase == CallPhase::Incoming)).await;
+    c.service.accept_call().unwrap();
+    for p in [&a, &b, &c] {
+        p.wait_for("everyone in", |s| members(s).len() == 2).await;
+        p.wait_for("Ayse is the host", |s| host(s) == Some(a_id.to_string())).await;
+    }
+
+    // Only the host can do it.
+    assert!(b.service.silence(&c_id, true).is_err());
+    assert!(b.service.remove_from_call(&c_id).is_err());
+
+    // Silencing turns Cem's mic off, and Ayse sees him as silenced.
+    let silenced = |s: &AppState| s.call.as_ref().is_some_and(|c| c.members.iter().any(|m| m.silenced));
+    a.service.silence(&c_id, true).unwrap();
+    c.wait_for("C is muted", |s| s.muted).await;
+    c.wait_notice(Notice::Silenced { name: "Ayse".into() }).await;
+    assert!(silenced(&a.service.state()));
+    // She can turn it back on...
+    a.service.silence(&c_id, false).unwrap();
+    c.wait_for("C is unmuted", |s| !s.muted).await;
+    c.wait_notice(Notice::Unsilenced { name: "Ayse".into() }).await;
+    assert!(!silenced(&a.service.state()));
+    // ...and so can he, which she gets to see.
+    a.service.silence(&c_id, true).unwrap();
+    c.wait_for("C is muted again", |s| s.muted).await;
+    c.service.set_muted(false);
+    a.wait_for("A sees C talking again", |s| !silenced(s)).await;
+    // But she can't turn on a mic he turned off himself.
+    c.service.set_muted(true);
+    a.service.silence(&c_id, false).unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(c.service.state().muted);
+    c.service.set_muted(false);
+
+    // Removing takes Cem out for everyone.
+    a.service.remove_from_call(&c_id).unwrap();
+    c.wait_for("C is out", |s| s.call.is_none()).await;
+    c.wait_notice(Notice::Removed { name: "Ayse".into() }).await;
+    a.wait_for("A has Burak left", |s| members(s) == ["Burak"]).await;
+    b.wait_for("B has Ayse left", |s| members(s) == ["Ayse"]).await;
+
+    // Anyone can ring him back in. Give his old guest link to Burak a moment to close first:
+    // a new one opened while the old is still closing loses the duplicate tie-break.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    a.service.call(&c_id).unwrap();
+    c.wait_for("C is ringing again", |s| s.call.as_ref().is_some_and(|c| c.phase == CallPhase::Incoming)).await;
+    c.service.accept_call().unwrap();
+    for p in [&a, &b, &c] {
+        p.wait_for("everyone back", |s| members(s).len() == 2).await;
+    }
+
+    // Ayse leaves: Burak and Cem agree on the next host without asking each other.
+    a.service.hang_up();
+    let next = b_id.min(c_id).to_string();
+    b.wait_for("B picks the successor", |s| members(s) == ["Cem"] && host(s) == Some(next.clone())).await;
+    c.wait_for("C picks the same one", |s| members(s) == ["Burak"] && host(s) == Some(next.clone())).await;
+
+    tokio::join!(a.service.shutdown(), b.service.shutdown(), c.service.shutdown());
+}

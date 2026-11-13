@@ -1,18 +1,26 @@
 // Dev-only fake backend, so the UI can be designed in a plain browser.
 // Loaded only by `pnpm dev` outside Tauri. Pick a scene with
-// `?scene=home|chat|call|group|incoming|incoming-group|ringing|settings|empty|update`.
+// `?scene=home|chat|call|music|call-home|overlay|menu|group|host|incoming|incoming-group|ringing|settings|empty|alone|update`.
 
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
 import type { AppState, CallStats, Devices, Message } from "../api";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "home";
+const overlayScene = scene === "overlay" || scene === "menu";
 
 // Headless Edge won't open a window narrower than about 500px, so scripts/shot.sh passes the app's real
 // window size as `?frame=380x660` and the app is drawn in a box of that size.
 const frame = new URLSearchParams(location.search).get("frame")?.match(/^(\d+)x(\d+)$/);
 if (frame) {
   const style = document.createElement("style");
-  style.textContent = `html,body{background:#888}#root{width:${frame[1]}px;height:${frame[2]}px;overflow:hidden;background:#fff}.app,.loading{height:100%!important}`;
+  style.textContent = `html,body{background:#888}#root{width:${frame[1]}px;height:${frame[2]}px;overflow:hidden;background:var(--bg)}.app,.loading{height:100%!important}`;
+  document.head.append(style);
+}
+// The overlay floats over a game: stand in a dark, busy backdrop for it.
+if (overlayScene) {
+  const style = document.createElement("style");
+  style.textContent = `html,body{background:repeating-linear-gradient(135deg,#2a3b2f 0 40px,#3d4f3a 40px 80px)!important}#root{background:transparent!important}`;
   document.head.append(style);
 }
 
@@ -27,11 +35,16 @@ const friends = [
 ].map((f) => ({ inCall: false, unread: 0, ...f })) as AppState["contacts"];
 // Selin is talking with someone else; Emre wrote while we were away.
 friends[1].inCall = scene === "home";
-friends[0].unread = scene === "home" ? 2 : 0;
+friends[0].unread = scene === "home" || scene === "call-home" ? 2 : 0;
+if (scene === "call-home") friends[0].inCall = true;
+// Everyone is away.
+if (scene === "alone") for (const f of friends) f.online = false;
+// "host": the group call with the first person's menu open, as the call's host sees it.
+if (scene === "host") setTimeout(() => document.querySelector<HTMLButtonElement>("button.lane-name")?.click(), 400);
 
-const person = (f: { id: string; name: string }) => ({ id: f.id, name: f.name, volume: 1 });
+const person = (f: { id: string; name: string }) => ({ id: f.id, name: f.name, volume: 1, silenced: false });
 // Someone in the group call who isn't one of our friends, turned down a little.
-const guest = { id: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", name: "Kaan", volume: 0.7 };
+const guest = { id: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", name: "Kaan", volume: 0.7, silenced: false };
 
 const minutesAgo = (m: number) => Date.now() - m * 60_000;
 const messages: Message[] = [
@@ -44,15 +57,21 @@ const messages: Message[] = [
 let micTestOn = false;
 
 function callFor(scene: string): AppState["call"] {
-  const call = { caller: null, members: [], ringing: [], sinceMs: null };
+  const call = { caller: null, members: [], ringing: [], sinceMs: null, sharing: scene === "music" ? "Spotify" : null, host: me.id as string | null };
   switch (scene) {
     case "call":
-      return { ...call, phase: "active", members: [person(friends[0])], sinceMs: Date.now() - 754_000 };
+    case "music":
+    case "music-pick":
+    case "call-home":
+    case "overlay":
+    case "menu":
+      return { ...call, phase: "active", members: [person(friends[0])], sinceMs: Date.now() - 754_000, host: friends[0].id };
     case "group":
+    case "host":
       return {
         ...call,
         phase: "active",
-        members: [person(friends[0]), person(friends[1]), guest],
+        members: [{ ...person(friends[0]), silenced: scene === "host" }, person(friends[1]), guest],
         ringing: [person(friends[2])],
         sinceMs: Date.now() - 1_954_000,
       };
@@ -80,6 +99,16 @@ const state: AppState = {
     echo_cancellation: true,
     auto_gain: true,
     output_volume: 1,
+    shortcuts: {
+      quick_menu: { ctrl: true, shift: true, alt: false, key: 0x20 },
+      toggle_mute: { ctrl: true, shift: true, alt: false, key: 0x4d },
+      toggle_deafen: { ctrl: true, shift: true, alt: false, key: 0x44 },
+      toggle_overlay: { ctrl: true, shift: true, alt: false, key: 0x4f },
+    },
+    overlay: { enabled: overlayScene, corner: "topLeft", show_voice: true, show_messages: true },
+    music_volume: 0.6,
+    theme: "system",
+    ambient_motion: true,
   },
   muted: false,
   deafened: false,
@@ -101,6 +130,7 @@ function stats(): CallStats {
     // The one who isn't our friend reaches us through a relay.
     route: (m.id === guest.id ? "relayed" : "direct") as "relayed" | "direct",
     pingMs: m.id === guest.id ? 48 : 6,
+    musicLevel: scene === "music" && i === 0 ? 0.08 : 0,
     bufferMs: 20,
     lost: 0,
     recovered: 0,
@@ -119,7 +149,7 @@ function stats(): CallStats {
   };
 }
 
-mockWindows("main");
+mockWindows(overlayScene ? "overlay" : "main");
 mockIPC(
   (cmd, args) => {
     switch (cmd) {
@@ -146,9 +176,21 @@ mockIPC(
         return "0.2.1";
       case "plugin:updater|check":
         return scene === "update" ? { rid: 1, currentVersion: "0.2.1", version: "0.3.0", date: null, body: "", rawJson: {} } : null;
+      case "set_settings":
+        state.settings = (args as { settings: AppState["settings"] }).settings;
+        setTimeout(() => emit("state-changed"));
+        return;
       case "set_muted":
         state.muted = (args as { muted: boolean }).muted;
         return;
+      case "music_apps":
+        return [
+          { pid: 1, name: "Spotify", active: true },
+          { pid: 2, name: "Google Chrome", active: false },
+          { pid: 3, name: "Steam", active: false },
+        ];
+      case "overlay_menu_open":
+        return scene === "menu";
       case "set_deafened":
         state.deafened = (args as { deafened: boolean }).deafened;
         return;

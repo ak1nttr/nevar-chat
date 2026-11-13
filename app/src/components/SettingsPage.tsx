@@ -1,7 +1,19 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, AppState, Devices, MicTest as MicTestStats, Mode, Settings, describeError } from "../api";
-import { vkFromKeyboard, vkFromMouse, vkLabel } from "../keys";
+import {
+  api,
+  AppState,
+  Corner,
+  Devices,
+  Hotkey,
+  MicTest as MicTestStats,
+  Mode,
+  Settings,
+  ShortcutName,
+  Theme,
+  describeError,
+} from "../api";
+import { hotkeyFromKeyboard, hotkeyFromMouse, hotkeyLabel, sameHotkey, vkFromKeyboard, vkFromMouse, vkLabel } from "../keys";
 import { Icon } from "./Icon";
 import { TopBar } from "./Mark";
 import { displayLevel } from "./VoiceLane";
@@ -23,8 +35,12 @@ export function SettingsPage({ state, onClose, toast }: Props) {
     getVersion().then(setVersion).catch(() => {});
   }, []);
 
+  // Refetched when the window comes back, since a device may have been plugged in meanwhile.
   useEffect(() => {
-    api.listDevices().then(setDevices).catch((e) => toast(describeError(e)));
+    const load = () => api.listDevices().then(setDevices).catch((e) => toast(describeError(e)));
+    load();
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
   }, [toast]);
 
   useEffect(() => {
@@ -65,6 +81,28 @@ export function SettingsPage({ state, onClose, toast }: Props) {
           </Field>
         </Group>
 
+        <Group label="Görünüm">
+          <div className="segmented" role="group" aria-label="Tema">
+            {(
+              [
+                ["system", "Windows'a uy"],
+                ["light", "Açık"],
+                ["dark", "Koyu"],
+              ] as [Theme, string][]
+            ).map(([theme, label]) => (
+              <button key={theme} className={settings.theme === theme ? "selected" : ""} onClick={() => update({ theme })}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <Switch
+            label="Arka plan hareketi"
+            hint="Arkadaş listesinin arkasında yavaşça yüzen piksel köpekbalıkları. Pencere arkadayken durur."
+            checked={settings.ambient_motion}
+            onChange={(ambient_motion) => update({ ambient_motion })}
+          />
+        </Group>
+
         <Group label="Ses cihazları">
           <Field label="Mikrofon">
             <DeviceSelect
@@ -83,6 +121,10 @@ export function SettingsPage({ state, onClose, toast }: Props) {
             />
           </Field>
           <p className="hint">
+            Otomatik seçiliyken Windows hangi cihazı kullanıyorsa o kullanılır. Görüşme sırasında kulaklık takıp
+            çıkarınca ses kendiliğinden yeni cihaza geçer.
+          </p>
+          <p className="hint">
             Bluetooth kulaklığın mikrofonu, kulaklığı düşük kaliteli “telefon” moduna alır. Mümkünse ayrı bir mikrofon
             seç.
           </p>
@@ -96,6 +138,18 @@ export function SettingsPage({ state, onClose, toast }: Props) {
               value={settings.output_volume}
               style={{ "--fill": `${(settings.output_volume / 2) * 100}%` } as React.CSSProperties}
               onChange={(e) => update({ output_volume: Number(e.target.value) })}
+            />
+          </Field>
+          <Field label="Paylaşılan müzik" value={`%${Math.round(settings.music_volume * 100)}`}>
+            <input
+              className="slider"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.music_volume}
+              style={{ "--fill": `${settings.music_volume * 100}%` } as React.CSSProperties}
+              onChange={(e) => update({ music_volume: Number(e.target.value) })}
             />
           </Field>
           <MicTest inCall={state.call != null} toast={toast} />
@@ -145,6 +199,65 @@ export function SettingsPage({ state, onClose, toast }: Props) {
           />
         </Group>
 
+        <Group label="Kısayollar">
+          <p className="hint">Oyundayken de çalışır. Değiştirmek için tıklayıp yeni tuşlara bas.</p>
+          {SHORTCUTS.map(([name, label]) => (
+            <HotkeyPicker
+              key={name}
+              label={label}
+              value={settings.shortcuts[name]}
+              onChange={(hotkey) => {
+                // A combination does one thing: taking it here frees it elsewhere.
+                const shortcuts = { ...settings.shortcuts };
+                for (const other of Object.keys(shortcuts) as ShortcutName[]) {
+                  if (sameHotkey(shortcuts[other], hotkey)) shortcuts[other] = null;
+                }
+                update({ shortcuts: { ...shortcuts, [name]: hotkey } });
+              }}
+            />
+          ))}
+        </Group>
+
+        <Group label="Oyun içi pencere">
+          <Switch
+            label="Oyunun üstünde göster"
+            hint="Ekranın köşesinde konuşanları ve gelen mesajları gösterir. Tıklamaları oyuna geçirir."
+            checked={settings.overlay.enabled}
+            onChange={(enabled) => update({ overlay: { ...settings.overlay, enabled } })}
+          />
+          {settings.overlay.enabled && (
+            <>
+              <div className="segmented corners" role="group" aria-label="Köşe">
+                {CORNERS.map(([corner, label]) => (
+                  <button
+                    key={corner}
+                    className={settings.overlay.corner === corner ? "selected" : ""}
+                    onClick={() => update({ overlay: { ...settings.overlay, corner } })}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <Switch
+                label="Konuşanlar"
+                hint="Görüşmedekiler, konuşan yanar."
+                checked={settings.overlay.show_voice}
+                onChange={(show_voice) => update({ overlay: { ...settings.overlay, show_voice } })}
+              />
+              <Switch
+                label="Mesajlar"
+                hint="Yeni mesaj birkaç saniye görünür."
+                checked={settings.overlay.show_messages}
+                onChange={(show_messages) => update({ overlay: { ...settings.overlay, show_messages } })}
+              />
+            </>
+          )}
+          <p className="hint">
+            Pencereli ve kenarlıksız tam ekran oyunlarda görünür. “Tam ekran” moddaki oyunlar her şeyin üstüne
+            çizer; orada görmek için oyunu kenarlıksız moda al.
+          </p>
+        </Group>
+
         <footer className="settings-foot">
           <span>nevar {version}</span>
           <span>
@@ -155,6 +268,20 @@ export function SettingsPage({ state, onClose, toast }: Props) {
     </main>
   );
 }
+
+const SHORTCUTS: [ShortcutName, string][] = [
+  ["quick_menu", "Hızlı menü"],
+  ["toggle_mute", "Mikrofonu kapat/aç"],
+  ["toggle_deafen", "Sesi kapat/aç"],
+  ["toggle_overlay", "Oyun içi pencere"],
+];
+
+const CORNERS: [Corner, string][] = [
+  ["topLeft", "Sol üst"],
+  ["topRight", "Sağ üst"],
+  ["bottomLeft", "Sol alt"],
+  ["bottomRight", "Sağ alt"],
+];
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -188,7 +315,7 @@ function DeviceSelect(props: {
   return (
     <span className="select">
       <select value={props.value ?? ""} onChange={(e) => props.onChange(e.target.value || null)}>
-        <option value="">Windows varsayılanı{props.fallback ? ` · ${props.fallback}` : ""}</option>
+        <option value="">Otomatik{props.fallback ? ` · ${props.fallback}` : ""}</option>
         {props.options.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -320,6 +447,61 @@ function KeyPicker({ value, onChange }: { value: number | null; onChange: (vk: n
       <button className={listening ? "keycap listening" : "keycap"} onClick={() => setListening(true)}>
         {listening ? "Bir tuşa bas…" : vkLabel(value)}
       </button>
+    </div>
+  );
+}
+
+/** Click, then press a key combination (or a mouse side button). Esc cancels. */
+function HotkeyPicker(props: { label: string; value: Hotkey | null; onChange: (h: Hotkey | null) => void }) {
+  const { onChange } = props;
+  const [listening, setListening] = useState(false);
+
+  useEffect(() => {
+    if (!listening) return;
+    // Pressing the current combination must not mute or open the menu meanwhile.
+    api.pauseShortcuts(true).catch(() => {});
+    const done = (h: Hotkey) => {
+      onChange(h);
+      setListening(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") return setListening(false);
+      const h = hotkeyFromKeyboard(e);
+      if (h) done(h);
+    };
+    const onMouse = (e: MouseEvent) => {
+      const h = hotkeyFromMouse(e);
+      if (h) {
+        e.preventDefault();
+        done(h);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("mousedown", onMouse, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("mousedown", onMouse, true);
+      api.pauseShortcuts(false).catch(() => {});
+    };
+  }, [listening, onChange]);
+
+  return (
+    <div className="key-picker">
+      <span>
+        <strong>{props.label}</strong>
+      </span>
+      <span className="key-picker-actions">
+        <button className={listening ? "keycap listening" : "keycap"} onClick={() => setListening(true)}>
+          {listening ? "Tuşlara bas…" : hotkeyLabel(props.value)}
+        </button>
+        {props.value && !listening && (
+          <button className="icon-btn" onClick={() => onChange(null)} title="Kısayolu kapat" aria-label={`${props.label} kısayolunu kapat`}>
+            <Icon name="close" size={14} />
+          </button>
+        )}
+      </span>
     </div>
   );
 }

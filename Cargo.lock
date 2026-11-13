@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "nevar"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "nevar-core",
@@ -3646,6 +3646,8 @@ dependencies = [
  "sonora",
  "tokio",
  "tracing",
+ "windows",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 

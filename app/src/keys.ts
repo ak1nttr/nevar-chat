@@ -1,5 +1,7 @@
-// Maps browser key/mouse events to Windows virtual-key codes for push-to-talk,
-// and back to readable labels.
+// Maps browser key/mouse events to Windows virtual-key codes for push-to-talk and
+// shortcuts, and back to readable labels.
+
+import type { Hotkey } from "./api";
 
 const named: Record<string, [number, string]> = {
   Space: [0x20, "Boşluk"],
@@ -54,4 +56,29 @@ export function vkLabel(vk: number | null): string {
   if (vk === 0x05) return "Fare geri tuşu";
   if (vk === 0x06) return "Fare ileri tuşu";
   return Object.values(named).find(([code]) => code === vk)?.[1] ?? `Tuş ${vk}`;
+}
+
+const MODIFIER_VKS = new Set([0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5]);
+
+/** A shortcut from a key press with its modifiers. Modifiers alone don't make one. */
+export function hotkeyFromKeyboard(e: KeyboardEvent): Hotkey | null {
+  const key = vkFromKeyboard(e);
+  if (key == null || MODIFIER_VKS.has(key)) return null;
+  return { ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, key };
+}
+
+export function hotkeyFromMouse(e: MouseEvent): Hotkey | null {
+  const key = vkFromMouse(e);
+  if (key == null) return null;
+  return { ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, key };
+}
+
+/** "Ctrl + Shift + M". */
+export function hotkeyLabel(h: Hotkey | null): string {
+  if (!h) return "Kapalı";
+  return [h.ctrl && "Ctrl", h.shift && "Shift", h.alt && "Alt", vkLabel(h.key)].filter(Boolean).join(" + ");
+}
+
+export function sameHotkey(a: Hotkey | null, b: Hotkey | null): boolean {
+  return !!a && !!b && a.key === b.key && a.ctrl === b.ctrl && a.shift === b.shift && a.alt === b.alt;
 }

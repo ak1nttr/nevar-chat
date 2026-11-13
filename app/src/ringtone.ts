@@ -39,3 +39,22 @@ export function startRinging(kind: "incoming" | "outgoing"): () => void {
   const timer = setInterval(ring, kind === "incoming" ? 2000 : 3000);
   return () => clearInterval(timer);
 }
+
+/** A quick blip after a shortcut: rising when something turns back on, falling when it turns off. */
+export function toggleCue(off: boolean) {
+  const ac = audio();
+  const notes = off ? [660, 440] : [440, 660];
+  notes.forEach((freq, i) => {
+    const start = ac.currentTime + 0.02 + i * 0.07;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(0.1, start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
+    osc.connect(gain).connect(ac.destination);
+    osc.start(start);
+    osc.stop(start + 0.14);
+  });
+}

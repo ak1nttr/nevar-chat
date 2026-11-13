@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 export type ContactState = "outgoing" | "incoming" | "friend" | "declined";
 export type CallPhase = "outgoing" | "incoming" | "active";
 export type Mode = "voiceActivity" | "pushToTalk" | "open";
+export type Theme = "system" | "light" | "dark";
 
 export interface Settings {
   mic: string | null;
@@ -15,6 +16,40 @@ export interface Settings {
   echo_cancellation: boolean;
   auto_gain: boolean;
   output_volume: number;
+  shortcuts: Shortcuts;
+  overlay: OverlaySettings;
+  /** How loud music others share plays: 0 to 1. */
+  music_volume: number;
+  /** "system" follows Windows. */
+  theme: Theme;
+  /** The pixel sharks behind the friend list. */
+  ambient_motion: boolean;
+}
+
+/** A key combination: a Windows virtual-key code (keyboard or mouse) plus modifiers. */
+export interface Hotkey {
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  key: number;
+}
+
+export type ShortcutName = "quick_menu" | "toggle_mute" | "toggle_deafen" | "toggle_overlay";
+export type Shortcuts = Record<ShortcutName, Hotkey | null>;
+
+export type Corner = "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
+
+export interface OverlaySettings {
+  enabled: boolean;
+  corner: Corner;
+  show_voice: boolean;
+  show_messages: boolean;
+}
+
+/** Sent after a global shortcut changed something. */
+export interface ShortcutUsed {
+  shortcut: "quickMenu" | "toggleMute" | "toggleDeafen" | "toggleOverlay";
+  on: boolean;
 }
 
 export interface Contact {
@@ -33,6 +68,8 @@ export interface Person {
   name: string;
   /** How loud they play for us in calls: 1 as sent, 0 to 2. */
   volume: number;
+  /** We host the call and turned their mic off; they haven't turned it back on. */
+  silenced: boolean;
 }
 
 export interface Message {
@@ -58,6 +95,18 @@ export interface CallInfo {
   /** People we rang into the call who haven't answered yet. */
   ringing: Person[];
   sinceMs: number | null;
+  /** The app whose sound we share into the call. */
+  sharing: string | null;
+  /** Friend code of whoever runs the call (may be us): they can take people out or silence them. */
+  host: string | null;
+}
+
+/** An app making sound, which can be shared into a call. */
+export interface MusicApp {
+  pid: number;
+  name: string;
+  /** Playing right now. */
+  active: boolean;
 }
 
 export interface AppState {
@@ -90,6 +139,8 @@ export interface PeerStats {
   recovered: number;
   /** Their voice as last played. */
   level: number;
+  /** Music they share, as last played; 0 when they aren't sharing. */
+  musicLevel: number;
 }
 
 export interface Devices {
@@ -106,6 +157,9 @@ export type Notice =
   | { kind: "noAnswer"; name: string }
   | { kind: "missedCall"; name: string }
   | { kind: "connectionLost"; name: string }
+  | { kind: "removed"; name: string }
+  | { kind: "silenced"; name: string }
+  | { kind: "unsilenced"; name: string }
   | { kind: "message"; from: string; name: string; text: string }
   | { kind: "error"; message: string };
 
@@ -125,6 +179,8 @@ export const api = {
   acceptCall: () => invoke<void>("accept_call"),
   declineCall: () => invoke<void>("decline_call"),
   hangUp: () => invoke<void>("hang_up"),
+  removeFromCall: (id: string) => invoke<void>("remove_from_call", { id }),
+  silence: (id: string, on: boolean) => invoke<void>("silence", { id, on }),
   setVolume: (id: string, volume: number) => invoke<void>("set_volume", { id, volume }),
   sendMessage: (id: string, text: string) => invoke<void>("send_message", { id, text }),
   getMessages: (id: string) => invoke<Message[]>("get_messages", { id }),
@@ -132,6 +188,14 @@ export const api = {
   startMicTest: () => invoke<void>("start_mic_test"),
   stopMicTest: () => invoke<void>("stop_mic_test"),
   getMicTest: () => invoke<MicTest | null>("get_mic_test"),
+  musicApps: () => invoke<MusicApp[]>("music_apps"),
+  shareApp: (pid: number) => invoke<void>("share_app", { pid }),
+  stopSharing: () => invoke<void>("stop_sharing"),
+  pauseShortcuts: (paused: boolean) => invoke<void>("pause_shortcuts", { paused }),
+  overlayHasContent: (has: boolean) => invoke<void>("overlay_has_content", { has }),
+  overlayMenuOpen: () => invoke<boolean>("overlay_menu_open"),
+  closeQuickMenu: () => invoke<void>("close_quick_menu"),
+  openMain: () => invoke<void>("open_main"),
 };
 
 /** Turns backend error text into something to show the user, in Turkish. */
@@ -151,6 +215,12 @@ export function describeError(e: unknown): string {
     ["nobody is calling", "Seni arayan kimse yok."],
     ["name can't be empty", "İsim boş olamaz."],
     ["connection lost", "Bağlantı koptu."],
+    ["only the one who started the call", "Bunu sadece görüşmeyi başlatan yapabilir."],
+    ["isn't in the call", "O kişi artık görüşmede değil."],
+    ["music can only be shared during a call", "Müzik sadece görüşme sırasında paylaşılabilir."],
+    ["isn't making sound anymore", "O uygulama artık ses çıkarmıyor."],
+    ["can't capture an app's sound", "Bu Windows sürümü uygulama sesini paylaşamıyor (Windows 10 2004 ve sonrası gerekir)."],
+    ["refused to capture", "Windows bu uygulamanın sesini vermedi."],
     ["mic or speakers", "Mikrofon veya hoparlör açılamadı. Ayarlar'dan başka bir cihaz seç."],
   ];
   return known.find(([needle]) => text.includes(needle))?.[1] ?? text;
@@ -170,6 +240,12 @@ export function describeNotice(n: Notice): string {
       return `Cevapsız arama: ${n.name}`;
     case "connectionLost":
       return `${n.name} ile bağlantı koptu.`;
+    case "removed":
+      return `${n.name} seni görüşmeden çıkardı.`;
+    case "silenced":
+      return `${n.name} mikrofonunu kapattı. İstediğin zaman açabilirsin.`;
+    case "unsilenced":
+      return `${n.name} mikrofonunu geri açtı.`;
     case "message":
       return `${n.name}: ${n.text}`;
     case "error":

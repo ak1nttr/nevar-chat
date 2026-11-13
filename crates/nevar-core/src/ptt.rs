@@ -48,13 +48,13 @@ impl PushToTalk {
 }
 
 #[cfg(windows)]
-fn is_key_down(vk: u16) -> bool {
+pub(crate) fn is_key_down(vk: u16) -> bool {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     // The high bit is set while the key is down.
     unsafe { GetAsyncKeyState(i32::from(vk)) as u16 & 0x8000 != 0 }
 }
 
 #[cfg(not(windows))]
-fn is_key_down(_vk: u16) -> bool {
+pub(crate) fn is_key_down(_vk: u16) -> bool {
     false
 }

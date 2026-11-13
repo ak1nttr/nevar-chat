@@ -9,6 +9,7 @@ pub mod call;
 pub mod controls;
 pub mod gate;
 pub mod jitter;
+mod netsim;
 pub mod playout;
 
 use std::{
@@ -29,20 +30,20 @@ use iroh::{
 };
 use tracing::{debug, warn};
 
-pub use call::{AudioDevices, Call, CallStats, PeerStats};
+pub use call::{AudioDevices, Call, CallStats, MusicFeed, PeerStats};
 pub use controls::{Controls, TransmitMode};
 pub use jitter::{JitterBuffer, JitterStats};
 pub use playout::{Playout, Sources};
 
 use crate::{
     audio::{
-        Frame,
-        codec::{Encoder, MAX_PACKET},
+        Frame, STEREO_SAMPLES, StereoFrame,
+        codec::{Encoder, MAX_PACKET, MusicEncoder},
         processing::{ProcessingSettings, Processor},
         rms,
     },
     probe,
-    protocol::{FLAG_END_OF_SPEECH, PROBE_REQUEST, VOICE, VOICE_HEADER},
+    protocol::{FLAG_END_OF_SPEECH, MUSIC, PROBE_REQUEST, VOICE, VOICE_HEADER},
 };
 use gate::VoiceGate;
 
@@ -99,7 +100,10 @@ impl Destinations {
     }
 
     fn send(&self, packet: Bytes) {
-        if let Some(jitter) = &*self.loopback.lock().unwrap_or_else(|e| e.into_inner()) {
+        // A mic test plays back our voice only.
+        if packet[0] == VOICE
+            && let Some(jitter) = &*self.loopback.lock().unwrap_or_else(|e| e.into_inner())
+        {
             let seq = u32::from_le_bytes(packet[1..5].try_into().expect("voice header"));
             let end_of_speech = packet[5] & FLAG_END_OF_SPEECH != 0;
             jitter.lock().unwrap_or_else(|e| e.into_inner()).push(seq, packet.slice(VOICE_HEADER..), end_of_speech);
@@ -144,6 +148,7 @@ pub fn spawn_sender(
             let mut sending = false;
             let mut seq: u32 = 0;
             let mut buf = [0u8; MAX_PACKET];
+            let mut netsim = netsim::NetSim::default();
 
             while let Ok(mut frame) = frames.recv() {
                 processor.update(processing_settings(&controls));
@@ -190,7 +195,7 @@ pub fn spawn_sender(
                     packet.push(flags);
                     packet.extend_from_slice(opus);
                     seq = seq.wrapping_add(1);
-                    destinations.send(packet.into());
+                    netsim.send(&destinations, packet.into(), controls.simulated_network());
                 }
             }
         })?;
@@ -205,20 +210,60 @@ fn processing_settings(controls: &Controls) -> ProcessingSettings {
     }
 }
 
-/// Routes incoming datagrams until the connection closes: voice into the jitter
-/// buffer, probes straight back to the sender.
-pub async fn receive(conn: &Connection, jitter: &Mutex<JitterBuffer>) -> Result<()> {
+/// Routes incoming datagrams until the connection closes: voice and shared music into
+/// their jitter buffers, probes straight back to the sender.
+pub async fn receive(conn: &Connection, voice: &Mutex<JitterBuffer>, music: &Mutex<JitterBuffer>) -> Result<()> {
     while let Ok(datagram) = conn.read_datagram().await {
-        match datagram.first() {
-            Some(&VOICE) if datagram.len() > VOICE_HEADER => {
-                let seq = u32::from_le_bytes(datagram[1..5].try_into()?);
-                let end_of_speech = datagram[5] & FLAG_END_OF_SPEECH != 0;
-                let payload = datagram.slice(VOICE_HEADER..);
-                jitter.lock().unwrap_or_else(|e| e.into_inner()).push(seq, payload, end_of_speech);
+        let jitter = match datagram.first() {
+            Some(&VOICE) => voice,
+            Some(&MUSIC) => music,
+            Some(&PROBE_REQUEST) => {
+                probe::reply(conn, &datagram)?;
+                continue;
             }
-            Some(&PROBE_REQUEST) => probe::reply(conn, &datagram)?,
-            _ => {}
+            _ => continue,
+        };
+        if datagram.len() > VOICE_HEADER {
+            let seq = u32::from_le_bytes(datagram[1..5].try_into()?);
+            let end = datagram[5] & FLAG_END_OF_SPEECH != 0;
+            let payload = datagram.slice(VOICE_HEADER..);
+            jitter.lock().unwrap_or_else(|e| e.into_inner()).push(seq, payload, end);
         }
     }
     Ok(())
+}
+
+/// Encodes and sends shared music until `frames` closes, then tells everyone it stopped.
+/// `seq` numbers the packets and carries on across senders within a call, so switching
+/// what's shared looks like one continuous stream to listeners.
+pub fn spawn_music_sender(
+    destinations: Destinations,
+    frames: Receiver<StereoFrame>,
+    controls: Arc<Controls>,
+    seq: Arc<AtomicU32>,
+) -> Result<JoinHandle<()>> {
+    let mut encoder = MusicEncoder::new()?;
+    let handle = std::thread::Builder::new().name("music-sender".into()).spawn(move || {
+        let mut netsim = netsim::NetSim::default();
+        let mut buf = [0u8; MAX_PACKET];
+        let mut send = |frame: &StereoFrame, flags: u8, netsim: &mut netsim::NetSim| match encoder
+            .encode(frame, &mut buf)
+        {
+            Ok(len) => {
+                let mut packet = Vec::with_capacity(VOICE_HEADER + len);
+                packet.push(MUSIC);
+                packet.extend_from_slice(&seq.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+                packet.push(flags);
+                packet.extend_from_slice(&buf[..len]);
+                netsim.send(&destinations, packet.into(), controls.simulated_network());
+            }
+            Err(e) => warn!("music encode failed: {e:#}"),
+        };
+        while let Ok(frame) = frames.recv() {
+            send(&frame, 0, &mut netsim);
+        }
+        // Listeners stop right away instead of waiting out a gap.
+        send(&[0.0; STEREO_SAMPLES], FLAG_END_OF_SPEECH, &mut netsim);
+    })?;
+    Ok(handle)
 }
